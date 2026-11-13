@@ -126,3 +126,34 @@ def _dump(tmp_path):
     p = tmp_path / "truth.json"
     p.write_text(json.dumps(_truth_doc()))
     return str(p)
+
+
+def test_gaussian_answer_scores_as_that_gaussian():
+    from scipy.stats import norm
+
+    q = gaussian_quantiles(2.0, 0.5)
+    for y in (-1.0, 1.4, 2.0, 2.3, 4.5):
+        assert scoring.log_density(q, y) == pytest.approx(norm.logpdf(y, 2.0, 0.5), abs=1e-5)
+
+
+def test_asymmetric_answer_is_a_normalised_density():
+    from scipy.integrate import quad
+
+    q = [0.1, 0.4, 1.0, 2.5, 6.0]
+    total, _ = quad(lambda y: math.exp(scoring.log_density(q, y)), -50, 100, points=q, limit=200)
+    assert total == pytest.approx(1.0, abs=1e-6)
+
+
+def test_overconfidence_costs_more_than_underconfidence():
+    rng = np.random.default_rng(2)
+    ys = rng.normal(size=50_000)
+    narrow = np.mean([scoring.score_quantity(gaussian_quantiles(0, 0.1), y, 1.0)["reward"] for y in ys])
+    wide = np.mean([scoring.score_quantity(gaussian_quantiles(0, 10), y, 1.0)["reward"] for y in ys])
+    assert narrow < 3 * wide < 0
+    assert scoring.REWARD_FLOOR <= narrow
+
+
+def test_reward_is_clipped():
+    q = gaussian_quantiles(0.0, 1e-6)
+    assert scoring.score_quantity(q, 1.0, 1.0)["reward"] == scoring.REWARD_FLOOR
+    assert scoring.score_quantity(q, 0.0, 1.0)["reward"] == scoring.REWARD_CAP

@@ -40,6 +40,36 @@ def summarize(episodes: Iterable[dict]) -> dict[str, float]:
         reward_mean=reward.mean(),
         reward_se=reward.std(ddof=1) / math.sqrt(n_all) if n_all > 1 else math.nan,
     )
+    if all("pinball_skill" in e for e in valid):
+        out["pinball_skill_mean"] = float(np.mean([e["pinball_skill"] for e in valid]))
+    return out
+
+
+def coverage_by_truth(episodes: Iterable[dict], n_bins: int = 3) -> list[dict]:
+    """68% coverage in bins of the true value (equal-count bins).
+
+    An analysis can be calibrated on average and still fail in one region, for
+    example near a physical boundary. Needs a "truth" key on each episode.
+    """
+    eps = [e for e in episodes if e.get("valid", 1.0) >= 1.0 and "truth" in e]
+    if len(eps) < n_bins:
+        return []
+    truths = np.array([e["truth"] for e in eps])
+    edges = np.quantile(truths, np.linspace(0, 1, n_bins + 1))
+    idx = np.clip(np.searchsorted(edges, truths, side="right") - 1, 0, n_bins - 1)
+    out = []
+    for b in range(n_bins):
+        sel = [e for e, i in zip(eps, idx) if i == b]
+        if sel:
+            out.append(
+                {
+                    "lo": float(edges[b]),
+                    "hi": float(edges[b + 1]),
+                    "n": len(sel),
+                    "cov68": float(np.mean([e["covered68"] for e in sel])),
+                    "cov95": float(np.mean([e["covered95"] for e in sel])),
+                }
+            )
     return out
 
 

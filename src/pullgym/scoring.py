@@ -34,6 +34,43 @@ def sigma_from_quantiles(q: list[float]) -> float:
     """The Gaussian sigma implied by the q16-q84 interval."""
     return (q[3] - q[1]) / (2.0 * Z68)
 
+
+# The reward is a clipped log score. The five quantiles are read as a full
+# distribution by linear interpolation of the quantile function in Gaussian
+# z-space, extended past q025 and q975 with the outer slopes. A Gaussian answer
+# therefore becomes exactly that Gaussian; asymmetric answers become a
+# piecewise-scaled Gaussian. The log score is strictly proper over this family.
+#
+# Clip range, relative to the expected score of a calibrated Gaussian as sharp
+# as the reference: a floor of -20 is reached at a pull of about 6.3. For a
+# Gaussian belief the clipped score's optimum stays at the honest width.
+_ZS = tuple(_Z[t] for t in LEVELS)
+_LOG_SQRT_2PI = 0.5 * math.log(2.0 * math.pi)
+REWARD_FLOOR = -20.0
+REWARD_CAP = 5.0
+
+
+def log_density(q: list[float], y: float) -> float:
+    """Log density at y of the distribution the quantiles q describe."""
+    if y <= q[1]:
+        k = 0
+    elif y >= q[3]:
+        k = 3
+    else:
+        k = 1 if y < q[2] else 2
+    slope = (q[k + 1] - q[k]) / (_ZS[k + 1] - _ZS[k])
+    z = _ZS[k] + (y - q[k]) / slope
+    return -0.5 * z * z - _LOG_SQRT_2PI - math.log(slope)
+
+
+def log_score_reward(q: list[float], truth: float, ref_sigma: float) -> float:
+    """log p(truth) in reference-sigma units, shifted so a calibrated Gaussian
+    with the reference's width scores 0 on average, then clipped."""
+    r = log_density(q, truth) + math.log(ref_sigma) + _LOG_SQRT_2PI + 0.5
+    if not math.isfinite(r):
+        return REWARD_FLOOR if r < 0 or math.isnan(r) else REWARD_CAP
+    return max(REWARD_FLOOR, min(REWARD_CAP, r))
+
 # Applied on top of the fallback (prior) answer when an answer is invalid, so
 # that a valid "I know nothing" answer is always strictly better than none.
 INVALID_PENALTY = 1.0
@@ -98,11 +135,14 @@ def pinball(q: list[float], y: float) -> float:
 def score_quantity(q: list[float], truth: float, ref_sigma: float) -> dict[str, float]:
     """Per-episode metrics for one quantity.
 
-    reward: 1 - L / L0, where L is the pinball loss in units of the reference
-    analysis's sigma and L0 the expected loss of an exactly calibrated Gaussian
-    answer as sharp as the reference. A linear function of a proper score, so
-    still proper. The reference analysis scores about 0 on average; a perfect
-    point mass on the truth would score 1.
+    reward: clipped log score (see log_score_reward). The reference analysis
+    scores about 0 on average, sharper honest answers score higher, and an
+    overconfident miss costs about pull**2 / 2, down to REWARD_FLOOR.
+
+    pinball_skill: 1 - L / L0, where L is the pinball loss in units of the
+    reference's sigma and L0 the expected loss of a calibrated Gaussian as sharp
+    as the reference. Also proper, but lenient on overconfidence: its penalty
+    grows only linearly with the miss. Reported for comparison.
     """
     loss = pinball(q, truth) / ref_sigma
     q025, q16, q50, q84, q975 = q
@@ -110,8 +150,8 @@ def score_quantity(q: list[float], truth: float, ref_sigma: float) -> dict[str, 
     pull = (q50 - truth) / half
     pull = max(-PULL_CAP, min(PULL_CAP, pull))
     return {
-        "reward": 1.0 - loss / GAUSSIAN_REFERENCE_LOSS,
-        "loss": loss,
+        "reward": log_score_reward(q, truth, ref_sigma),
+        "pinball_skill": 1.0 - loss / GAUSSIAN_REFERENCE_LOSS,
         "covered68": 1.0 if q16 <= truth <= q84 else 0.0,
         "covered95": 1.0 if q025 <= truth <= q975 else 0.0,
         "pull": pull,
@@ -152,7 +192,7 @@ def score_episode(answer_path: str, truth_doc: dict) -> dict:
     # when the answer was invalid and the fallback was scored instead.
     if len(names) == 1 and valid:
         m = per_q[names[0]]
-        for k in ("covered68", "covered95", "pull", "sharpness"):
+        for k in ("covered68", "covered95", "pull", "sharpness", "pinball_skill"):
             rewards[k] = m[k]
     details.update(valid=valid, error=error, quantities=per_q, reward=rewards["reward"])
     return {"rewards": rewards, "details": details}
