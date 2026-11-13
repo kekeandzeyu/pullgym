@@ -40,3 +40,12 @@ def test_report_groups_by_model(tmp_path):
     assert "100%" in lines["model-a"] and "line_fit" in lines["model-a"]
     assert " 0% " in lines["model-b"]
     assert "1 trial(s) produced no verifier output" in text
+
+
+def test_coverage_by_truth_finds_a_bad_region():
+    from pullgym.stats import coverage_by_truth
+
+    eps = [{"truth": t, "covered68": 1.0 if t > 1 else 0.0, "covered95": 1.0} for t in range(9)]
+    bins = coverage_by_truth(eps, 3)
+    assert [b["n"] for b in bins] == [3, 3, 3]
+    assert bins[0]["cov68"] < 1.0 and bins[2]["cov68"] == 1.0

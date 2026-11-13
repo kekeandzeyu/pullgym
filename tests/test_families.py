@@ -30,6 +30,7 @@ def test_truth_not_in_visible_text(fam):
         assert f"{v:.8g}" not in visible
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("fam", FAMS, ids=lambda f: f.name)
 def test_reference_analysis_is_calibrated(fam):
     """The generator, verifier and reference must agree before any model is run.
@@ -44,6 +45,7 @@ def test_reference_analysis_is_calibrated(fam):
     assert 0.85 < s["pull_width_robust"] < 1.15
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("fam", FAMS, ids=lambda f: f.name)
 def test_reference_beats_degenerate_strategies(fam):
     res = probe(fam, range(20_000, 20_200))

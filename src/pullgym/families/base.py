@@ -122,3 +122,73 @@ def _strictly_increasing(vals: list[float]) -> list[float]:
         if vals[i] <= vals[i - 1]:
             vals[i] = float(np.nextafter(vals[i - 1], np.inf))
     return vals
+
+
+# ----------------------------------------------------------------------
+# Shared analysis helpers for reference analyses.
+
+
+def grid_quantiles(x: np.ndarray, log_post: np.ndarray) -> Quantiles:
+    """Quantiles at LEVELS of a 1-D posterior tabulated on an increasing grid."""
+    p = np.exp(log_post - np.max(log_post))
+    # Trapezoid CDF, then linear interpolation of its inverse.
+    cdf = np.concatenate([[0.0], np.cumsum(0.5 * (p[1:] + p[:-1]) * np.diff(x))])
+    cdf /= cdf[-1]
+    keep = np.concatenate([[True], np.diff(cdf) > 0])
+    vals = np.interp(LEVELS, cdf[keep], x[keep])
+    return _strictly_increasing([float(v) for v in vals])
+
+
+def weighted_line_fit(x, y, sigma):
+    """Weighted least squares y = a + b x. Returns (a, b), covariance, chi2."""
+    w = 1.0 / np.asarray(sigma) ** 2
+    A = np.vstack([np.ones_like(x), x]).T
+    cov = np.linalg.inv(A.T @ (A * w[:, None]))
+    beta = cov @ (A.T @ (w * y))
+    chi2 = float(np.sum(w * (y - A @ beta) ** 2))
+    return beta, cov, chi2
+
+
+def fit_binned_poisson(model, n, starts, bounds, scales=None):
+    """Binned Poisson maximum likelihood with an expected-information covariance.
+
+    model(p) returns expected counts per bin. Tries each start in `starts`.
+    The optimiser works in coordinates p / scales, so that parameters of very
+    different sizes (thousands of counts next to a slope of 0.01) move together.
+    """
+    from scipy.optimize import minimize
+
+    n = np.asarray(n, dtype=float)
+    scales = np.asarray(
+        scales if scales is not None else np.maximum(np.abs(starts[0]), 1e-3), dtype=float
+    )
+    sbounds = [
+        (None if lo is None else lo / sc, None if hi is None else hi / sc)
+        for (lo, hi), sc in zip(bounds, scales)
+    ]
+
+    def nll(u):
+        mu = model(u * scales)
+        if np.any(mu <= 0) or not np.all(np.isfinite(mu)):
+            return 1e300
+        return float(np.sum(mu - n * np.log(mu)))
+
+    best = None
+    for p0 in starts:
+        u0 = np.asarray(p0, dtype=float) / scales
+        r = minimize(nll, u0, method="Nelder-Mead", options={"maxiter": 4000, "xatol": 1e-6, "fatol": 1e-6})
+        u1 = np.clip(r.x, [lo if lo is not None else -np.inf for lo, _ in sbounds],
+                     [hi if hi is not None else np.inf for _, hi in sbounds])
+        r = minimize(nll, u1, method="L-BFGS-B", bounds=sbounds)
+        if best is None or r.fun < best.fun:
+            best = r
+    p = np.array(best.x, dtype=float) * scales
+    jac = np.empty((len(n), len(p)))
+    for k in range(len(p)):
+        h = 1e-5 * max(abs(p[k]), scales[k])
+        up, dn = p.copy(), p.copy()
+        up[k] += h
+        dn[k] -= h
+        jac[:, k] = (model(up) - model(dn)) / (2 * h)
+    info = jac.T @ (jac / model(p)[:, None])
+    return p, np.linalg.inv(info)

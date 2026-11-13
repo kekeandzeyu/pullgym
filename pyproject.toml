@@ -31,4 +31,5 @@ packages = ["src/pullgym"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["slow: many-seed calibration checks"]
+markers = ["slow: many-seed calibration checks (run with -m slow)"]
+addopts = "-m 'not slow'"

@@ -14,7 +14,7 @@ import json
 from collections import defaultdict
 from pathlib import Path
 
-from pullgym.stats import summarize
+from pullgym.stats import coverage_by_truth, summarize
 
 COLUMNS = [
     ("n", "n", "{:.0f}"),
@@ -51,7 +51,11 @@ def load_episodes(path: Path) -> tuple[list[dict], int]:
                     "split": d.get("split", "unknown"),
                     "quantity": q,
                     "valid": 1.0 if d.get("valid") else 0.0,
-                    **{k: m[k] for k in ("reward", "covered68", "covered95", "pull", "sharpness")},
+                    "truth": m["truth"],
+                    **{
+                        k: m[k]
+                        for k in ("reward", "covered68", "covered95", "pull", "sharpness")
+                    },
                 }
             )
     trials = {p.parent for p in path.rglob("config.json") if (p.parent / "trial.log").exists()}
@@ -59,7 +63,7 @@ def load_episodes(path: Path) -> tuple[list[dict], int]:
     return rows, missing
 
 
-def report(path: Path, group_by: str = "model,family,variant") -> str:
+def report(path: Path, group_by: str = "model,family,variant", truth_bins: int = 3) -> str:
     keys = [k.strip() for k in group_by.split(",") if k.strip()]
     rows, missing = load_episodes(path)
     if not rows:
@@ -80,6 +84,14 @@ def report(path: Path, group_by: str = "model,family,variant") -> str:
     out = ["  ".join(h.ljust(w) for h, w in zip(header, widths))]
     out.append("  ".join("-" * w for w in widths))
     out += ["  ".join(c.ljust(w) for c, w in zip(ln, widths)) for ln in lines]
+    if truth_bins > 1:
+        out.append("")
+        out.append(f"68% coverage in {truth_bins} equal-count bins of the true value:")
+        for g in sorted(groups):
+            bins = coverage_by_truth(groups[g], truth_bins)
+            if bins:
+                cells = "  ".join(f"[{b['lo']:.4g}, {b['hi']:.4g}] {b['cov68']:.0%} (n={b['n']})" for b in bins)
+                out.append(f"  {' / '.join(map(str, g))}:  {cells}")
     out.append("")
     out.append(
         "Coverage, pull and sharpness use valid answers only; reward includes invalid "

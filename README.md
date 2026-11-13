@@ -8,7 +8,7 @@ The question it answers:
 
 > When an agent reports a 68% interval on a measured quantity, how often does the true value fall inside it? A calibrated analyst is right 68% of the time.
 
-> **Status: pre-release (v0.1 in progress).** Three experiment families, the scorer, the Harbor exporter and the reporting tool work, and each family's reference analysis is verified to be calibrated. There are no model results yet. Interfaces may change before v0.1.
+> **Status: pre-release (v0.1 in progress).** Twelve experiment families across four tiers, the scorer, the Harbor exporter and the reporting tool work. Every family's reference analysis is verified to be calibrated. There are no model results yet. Interfaces may change before v0.1.
 
 ## Why
 
@@ -70,23 +70,53 @@ An answer that is missing or malformed is scored as if the agent had reported th
 
 | Level | Metric | What it tells you |
 |---|---|---|
-| Per episode (the reward) | `1 − L / L₀`, where `L` is the mean quantile (pinball) loss divided by the reference analysis's σ for that episode, and `L₀ ≈ 0.200` the expected loss of an exactly calibrated Gaussian as sharp as the reference | A proper scoring rule: the expected reward is highest when the reported quantiles match the agent's actual belief. The reference analysis averages about 0, a perfect point estimate would get 1, and worse answers go negative. |
+| Per episode (the reward) | A clipped log score: the log density of the reported distribution at the true value, in units of the reference analysis's σ, shifted so that a calibrated Gaussian as sharp as the reference averages 0, and clipped to [−20, +5] | A proper scoring rule: the expected reward is highest when the reported distribution matches the agent's actual belief. An overconfident miss costs about pull²/2, so error bars 10× too small average about −12, while error bars 10× too large average about −1.8. |
+| Per episode (secondary) | `pinball_skill`: `1 − L / L₀`, with `L` the mean quantile (pinball) loss in reference-σ units and `L₀ ≈ 0.200` its expected value for a calibrated Gaussian as sharp as the reference | Also proper, but lenient on overconfidence, because its penalty grows only linearly with the miss. Reported for comparison, not used as the reward. |
 | Per family | Coverage of the 68% (`q16`–`q84`) and 95% (`q025`–`q975`) intervals | The headline numbers: 68% and 95% when calibrated. |
 | Per family | Pull = (`q50` − truth) / σ, with σ taken from the half-interval on the truth's side. Reported: mean, RMS and a robust width (half the 16–84 percentile range of the pulls) | The numbers physicists read: mean 0 and width 1 when calibrated. The robust width is reported alongside the RMS because a single wildly overconfident episode dominates the RMS. |
 | Per family | Sharpness: the agent's σ divided by the reference analysis's σ | Separates "honest but sloppy" from "honest and efficient". |
+
+To score the log density, the five quantiles are read as a full distribution: the quantile function is interpolated linearly in Gaussian z-space and extended past `q025` and `q975` with the outer slopes. A Gaussian answer becomes exactly that Gaussian, and an asymmetric answer becomes a piecewise-scaled Gaussian. The clip at −20 is reached at a pull of about 6.3. For a Gaussian belief it does not move the best answer away from the honest width. For a strongly heavy-tailed belief that the agent reports as a Gaussian, the best width shrinks by about 10%. An agent can avoid that by widening its outer quantiles.
+
+`pullgym report` also shows 68% coverage in equal-count bins of the true value, so an analysis that is calibrated on average but fails near a physical boundary still shows up.
 
 `reward.json` holds the per-episode numbers that Harbor aggregates. `details.json` holds the truth, the answer and any validation error, and is what `pullgym report` reads.
 
 ## Task families
 
-| Tier | What makes it hard | Families |
-|---|---|---|
-| 1. Clean statistics | Nothing; a sanity check | **`line_fit`**: a cart's velocity from positions with known Gaussian errors. Planned: weighted mean; Poisson counting rate |
-| 2. Nuisance parameters | Something must be fitted or subtracted | **`decay_background`**: a lifetime from a binned decay curve over a flat background of unknown rate. Planned: peak over a sloped background; low counts where the Gaussian approximation fails |
-| 3. Systematics | The statistical error alone is wrong | **`voltmeter_gain`**: a voltage read many times on a meter whose gain has a certified uncertainty. Planned: correlated errors; errors in both x and y; stated errors that are too small; outliers; detector dead time |
-| 4. Traps | The honest answer is a limit, or "this is not measured" | Planned: no signal present; many places to look for a peak; inconsistent units in the apparatus note |
+| Tier | What makes it hard | Family | The experiment |
+|---|---|---|---|
+| 1. Clean statistics | Nothing; a sanity check | `line_fit` | A cart's velocity from positions with known Gaussian errors |
+| | | `weighted_mean` | The speed of sound from several groups with very different stated errors |
+| | | `counting_rate` | A Poisson count rate from repeated fixed-time counts |
+| 2. Nuisance parameters | Something must be fitted or subtracted | `decay_background` | A lifetime from a binned decay curve over a flat background of unknown rate |
+| | | `peak_background` | A gamma-ray line's energy on a sloped background, with the line width unknown |
+| | | `low_count_rate` | A weak source's rate from a handful of counts, on and off source |
+| 3. Systematics | The statistical error alone is wrong | `voltmeter_gain` | A voltage on a meter whose gain has a certified uncertainty |
+| | | `underestimated_errors` | A resistance from a V–I curve whose stated error bars are too small by an unknown factor |
+| | | `errors_xy` | A spring constant when the extension readings have errors as large as the force readings |
+| | | `correlated_norm` | A density from runs over several days, each day sharing its own calibration error |
+| | | `dead_time` | A true count rate behind a counter whose dead time is uncertain, giving an asymmetric interval |
+| 4. Traps | The honest answer is a limit | `no_signal` | The strength of a faint line that is often indistinguishable from zero |
 
-v0.1 targets 12 families.
+Planned beyond v0.1: outliers; many places to look for a peak (look-elsewhere); inconsistent units in the apparatus note.
+
+### What the traps catch
+
+Each family is built so that a common shortcut gives the wrong error bar. The table below scores those shortcuts with the same scorer the agents face, on 300 seeds per family.
+
+| Family | Shortcut | Coverage 68% | Coverage 95% | Robust pull width | Sharpness | Reward |
+|---|---|---|---|---|---|---|
+| `voltmeter_gain` | Statistical error only, ignoring the gain certificate | 9% | 16% | 12.3 | 0.08 | −12.6 |
+| `underestimated_errors` | Trust the stated error bars | 38% | 70% | 1.90 | 0.50 | −1.06 |
+| `errors_xy` | Ignore the errors in x | 25% | 46% | 4.01 | 0.27 | −5.48 |
+| `correlated_norm` | Treat all runs as independent | 11% | 23% | 5.98 | 0.17 | −8.33 |
+| `correlated_norm` | Add the calibration error once, as if all days shared it | 88% | 100% | 0.59 | 1.71 | −0.22 |
+| `dead_time` | Correct for dead time but ignore its uncertainty | 6% | 12% | 15.8 | 0.06 | −13.4 |
+| `low_count_rate` | √N Gaussian errors | 67% | 94% | 0.97 | 1.29 | −0.48 |
+| `no_signal` | Sideband-subtracted counts with √N Gaussian errors | 65% | 92% | 1.08 | 1.53 | −0.57 |
+
+The reference analyses average a reward of about 0. In `low_count_rate` and `no_signal`, the Gaussian shortcut keeps roughly nominal coverage. It loses on sharpness and reward instead, because its interval is wider than the data support and runs into negative rates. Those two families test efficiency and respect for the physical boundary more than coverage.
 
 ### Reference analyses are calibrated
 
@@ -95,10 +125,21 @@ Every family ships a reference analysis written by a human. Before any model is 
 | Family | Coverage 68% | Coverage 95% | Pull mean | Pull RMS | Pull robust width |
 |---|---|---|---|---|---|
 | `line_fit` | 66.9% | 94.9% | +0.01 | 1.01 | 1.01 |
+| `weighted_mean` | 68.3% | 95.3% | +0.01 | 1.00 | 0.99 |
+| `counting_rate` | 64.3%\* | 95.1% | +0.02 | 1.04 | 1.07 |
 | `decay_background` | 67.5% | 94.2% | +0.02 | 1.03 | 1.01 |
+| `peak_background` | 68.0% | 94.5% | +0.01 | 1.02 | 1.00 |
+| `low_count_rate` | 67.2% | 94.6% | −0.01 | 0.96 | 1.00 |
 | `voltmeter_gain` | 69.3% | 94.8% | −0.02 | 1.00 | 0.97 |
+| `underestimated_errors` | 67.4% | 95.0% | −0.01 | 1.06 | 1.01 |
+| `errors_xy` | 66.7% | 94.2% | −0.02 | 1.02 | 1.01 |
+| `correlated_norm` | 66.8% | 95.2% | −0.01 | 1.00 | 1.01 |
+| `dead_time` | 68.9% | 94.8% | +0.03 | 1.00 | 0.97 |
+| `no_signal` | 68.0% | 94.2% | +0.00 | 0.95 | 0.99 |
 
-The test suite repeats this check with fewer seeds on every run.
+\* A fluctuation in this seed range: on 20,000 seeds, `counting_rate` gives 68.0% ± 0.3% and 95.1% ± 0.2%. Its reference is a Bayesian posterior whose coverage is essentially exact by construction.
+
+The slow test suite (`pytest -m slow`) repeats this check with 400 seeds per family. `pullgym probe` confirms that in every family the reference analysis has a higher mean reward than intervals 0.1×, 0.5×, 2× or 10× its width, a centre shifted by 1σ, or the prior alone.
 
 ### Adding a family
 
@@ -148,7 +189,8 @@ No model results yet. The first table will report coverage and pull per family f
 
 ```bash
 uv sync
-uv run pytest
+uv run pytest            # fast checks, under a minute
+uv run pytest -m slow    # many-seed calibration and probe checks for every family
 ```
 
 ## Contributing

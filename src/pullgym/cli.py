@@ -76,7 +76,7 @@ def cmd_probe(args) -> int:
 def cmd_report(args) -> int:
     from pullgym.report import report
 
-    print(report(Path(args.path), group_by=args.by))
+    print(report(Path(args.path), group_by=args.by, truth_bins=args.truth_bins))
     return 0
 
 
@@ -113,6 +113,7 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument(
         "--by", default="model,family,variant", help="comma list of grouping keys"
     )
+    r.add_argument("--truth-bins", type=int, default=3, help="bins of the true value (1 = off)")
     r.set_defaults(fn=cmd_report)
 
     args = p.parse_args(argv)
