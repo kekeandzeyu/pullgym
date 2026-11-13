@@ -1,3 +1,18 @@
 # Private planning notes: never publish
 plan-*.md
 *.plan.md
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+.pytest_cache/
+dist/
+build/
+
+# Generated task folders, run outputs and private seeds
+tasks/
+jobs/
+runs/
+*.secret
