@@ -2,8 +2,12 @@
 
 Harbor writes one directory per trial:
 
-    <trial>/config.json            agent name and model
+    <trial>/config.json            trial config (task, trial name, job id)
+    <trial>/result.json            agent name and model, under config.agent
+    <trial>/trial.log
     <trial>/verifier/details.json  written by pullgym's scorer
+
+Older Harbor versions put the agent block in config.json instead; both are read.
 
 Episodes are grouped by any of: model, agent, family, variant, split.
 """
@@ -29,18 +33,38 @@ COLUMNS = [
 ]
 
 
+def _read_json(path: Path) -> dict:
+    try:
+        d = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
+def trial_agent(trial: Path) -> tuple[str, str]:
+    """(agent name, model name) for a Harbor trial directory.
+
+    A trial run without a model (such as Harbor's oracle) is labelled by its
+    agent name in the model column.
+    """
+    result = _read_json(trial / "result.json")
+    cfg = (result.get("config") or {}).get("agent") or {}
+    if not cfg:
+        cfg = _read_json(trial / "config.json").get("agent") or {}
+    info = result.get("agent_info") or {}
+    model_info = info.get("model_info") or {}
+    agent = cfg.get("name") or info.get("name") or "unknown"
+    model = cfg.get("model_name") or model_info.get("name") or agent
+    return agent, model
+
+
 def load_episodes(path: Path) -> tuple[list[dict], int]:
     """Returns (episode rows, number of trials that produced no verifier output)."""
     rows = []
     for details_path in sorted(path.rglob("verifier/details.json")):
         trial = details_path.parent.parent
         d = json.loads(details_path.read_text())
-        agent, model = "unknown", "unknown"
-        cfg_path = trial / "config.json"
-        if cfg_path.is_file():
-            cfg = json.loads(cfg_path.read_text()).get("agent", {})
-            agent = cfg.get("name") or agent
-            model = cfg.get("model_name") or agent
+        agent, model = trial_agent(trial)
         for q, m in d["quantities"].items():
             rows.append(
                 {
@@ -67,7 +91,13 @@ def report(path: Path, group_by: str = "model,family,variant", truth_bins: int =
     keys = [k.strip() for k in group_by.split(",") if k.strip()]
     rows, missing = load_episodes(path)
     if not rows:
-        return f"No pullgym verifier output found under {path}."
+        msg = f"No pullgym verifier output found under {path}."
+        if missing:
+            msg += (
+                f" {missing} trial(s) ran but produced no verifier output; "
+                "see exception.txt in each trial directory."
+            )
+        return msg
     groups: dict[tuple, list[dict]] = defaultdict(list)
     for r in rows:
         groups[tuple(r[k] for k in keys)].append(r)

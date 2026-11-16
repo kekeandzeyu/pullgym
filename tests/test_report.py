@@ -42,6 +42,56 @@ def test_report_groups_by_model(tmp_path):
     assert "1 trial(s) produced no verifier output" in text
 
 
+def _trial_dir(tmp_path, name="t"):
+    trial = tmp_path / "jobs" / "job1" / name
+    trial.mkdir(parents=True)
+    (trial / "trial.log").write_text("")
+    return trial
+
+
+def test_agent_and_model_from_harbor_result_json(tmp_path):
+    # Harbor 0.25: config.json has no agent block; result.json carries it.
+    from pullgym.report import trial_agent
+
+    trial = _trial_dir(tmp_path)
+    (trial / "config.json").write_text(json.dumps({"task": {}, "trial_name": "t", "job_id": "j"}))
+    (trial / "result.json").write_text(
+        json.dumps(
+            {
+                "config": {"agent": {"name": "claude-code", "model_name": "anthropic/m1"}},
+                "agent_info": {"name": "claude-code", "model_info": {"name": "m1"}},
+            }
+        )
+    )
+    assert trial_agent(trial) == ("claude-code", "anthropic/m1")
+
+
+def test_oracle_trial_is_labelled_by_agent(tmp_path):
+    from pullgym.report import trial_agent
+
+    trial = _trial_dir(tmp_path)
+    (trial / "config.json").write_text("{}")
+    (trial / "result.json").write_text(
+        json.dumps(
+            {
+                "config": {"agent": {"name": "oracle", "model_name": None}},
+                "agent_info": {"name": "oracle", "model_info": None},
+            }
+        )
+    )
+    assert trial_agent(trial) == ("oracle", "oracle")
+
+
+def test_report_counts_failures_when_nothing_scored(tmp_path):
+    for i in range(3):
+        trial = _trial_dir(tmp_path, f"t{i}")
+        (trial / "config.json").write_text("{}")
+        (trial / "exception.txt").write_text("RuntimeError: docker compose failed")
+    text = report(tmp_path / "jobs")
+    assert "No pullgym verifier output" in text
+    assert "3 trial(s) ran but produced no verifier output" in text
+
+
 def test_coverage_by_truth_finds_a_bad_region():
     from pullgym.stats import coverage_by_truth
 
