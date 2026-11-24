@@ -181,9 +181,13 @@ Task instructions come in two variants, chosen at export (`--variant`):
 
 How the question is asked changes the answers, so results are always reported per variant.
 
-## Results
+## Results & Roadmap
 
-No model results yet. The first table will report coverage and pull per family for several frontier agents, alongside the reference analysis.
+No model results yet. See [docs/ROADMAP.md](docs/ROADMAP.md) for the technical audit, container-overhead diagnosis, low-cost evaluation plan, and next milestones:
+
+- **Model calibration table:** report 68%/95% coverage, pull width and sharpness across open and frontier agents alongside the human reference analyses.
+- **Fast local/Colab runner (`pullgym run-fast`):** lightweight isolated subprocess runner alongside Harbor Docker export for rapid multi-seed evaluation and RL rollouts.
+- **Proper-scoring-rule RLVR:** compare GRPO trained on `log_score_reward` against binary tolerance rewards on held-out systematic families to test whether distributional RLVR fixes agent overconfidence.
 
 ## Development
 
