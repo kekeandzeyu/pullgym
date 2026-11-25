@@ -59,7 +59,12 @@ def task_id(family: Family, split: str, seed: int) -> str:
     return f"{family.name}-{split}-{hashlib.sha256(str(seed).encode()).hexdigest()[:10]}"
 
 
-def instruction(family: Family, variant: str) -> str:
+def instruction(
+    family: Family,
+    variant: str,
+    data_dir: str = DATA_DIR,
+    answer_path: str = ANSWER_PATH,
+) -> str:
     q_lines = "\n".join(
         f"- `{q}`: {spec.description}, in {spec.unit}" for q, spec in family.quantities.items()
     )
@@ -68,7 +73,7 @@ def instruction(family: Family, variant: str) -> str:
     parts = [
         f"# {family.title}\n",
         family.task + "\n",
-        f"The data files and an apparatus note are in `{DATA_DIR}`. Read the apparatus "
+        f"The data files and an apparatus note are in `{data_dir}`. Read the apparatus "
         "note before you start. Python 3 with numpy, scipy, pandas and matplotlib is "
         "available. Analyse the data however you see fit.\n",
         f"## What to report\n\n{q_lines}\n",
@@ -80,15 +85,47 @@ def instruction(family: Family, variant: str) -> str:
     if extra:
         parts.append(extra + "\n")
     parts.append(
-        f"Write the answer to `{ANSWER_PATH}` (create the directory if needed), in "
+        f"Write the answer to `{answer_path}` (create the directory if needed), in "
         "exactly this form, with numbers only:\n\n"
         "```json\n"
         + json.dumps(
-            {example_q: {k: f"<number>" for k in scoring.KEYS}}, indent=2
+            {example_q: {k: "<number>" for k in scoring.KEYS}}, indent=2
         ).replace('"<number>"', "<number>")
         + "\n```\n"
     )
     return "\n".join(parts)
+
+
+def build_truth_doc(
+    family: Family,
+    ep,
+    ref: dict[str, list[float]],
+    prior: dict[str, list[float]],
+    name: str,
+    split: str,
+    variant: str,
+    seed: int,
+) -> dict:
+    """Build the hidden truth document shared by Harbor export and run-fast."""
+    truth_doc = {
+        "family": family.name,
+        "task": name,
+        "split": split,
+        "variant": variant,
+        "quantities": {
+            q: {
+                "truth": ep.truth[q],
+                "unit": family.quantities[q].unit,
+                "ref_sigma": scoring.sigma_from_quantiles(ref[q]),
+                "reference": ref[q],
+                "fallback": prior[q],
+            }
+            for q in family.quantities
+        },
+    }
+    if split == "dev":
+        truth_doc["seed"] = seed
+    return truth_doc
 
 
 def task_toml(family: Family, name: str, split: str, variant: str, seed: int) -> str:
@@ -151,24 +188,7 @@ def export_task(
         "RUN mkdir -p /logs/artifacts\n"
     )
 
-    truth_doc = {
-        "family": family.name,
-        "task": name,
-        "split": split,
-        "variant": variant,
-        "quantities": {
-            q: {
-                "truth": ep.truth[q],
-                "unit": family.quantities[q].unit,
-                "ref_sigma": scoring.sigma_from_quantiles(ref[q]),
-                "reference": ref[q],
-                "fallback": prior[q],
-            }
-            for q in family.quantities
-        },
-    }
-    if split == "dev":
-        truth_doc["seed"] = seed
+    truth_doc = build_truth_doc(family, ep, ref, prior, name, split, variant, seed)
     (root / "tests" / "truth.json").write_text(json.dumps(truth_doc, indent=2))
     shutil.copyfile(scoring.__file__, root / "tests" / "scoring.py")
     (root / "tests" / "Dockerfile").write_text(
