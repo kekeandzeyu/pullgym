@@ -49,3 +49,22 @@ Almost all current Reinforcement Learning with Verifiable Rewards (RLVR) on math
 | **3. Commercial Frontier Table** | Evaluate `deepseek-flash` & `deepseek-v4-pro` (off-peak 50% discount, cached prefixes) + 1 non-DeepSeek closed baseline (e.g. Claude Haiku / GPT-mini, plus optional 120-episode subset on Sonnet). | Commercial APIs | **~$8–$18** |
 | **4. Binary vs. Log-Score GRPO** | Train Qwen3-4B on 8 families (`run-fast` rollouts) under both rewards; report OOD pull width, 68%/95% coverage, and sharpness on the 4 held-out families. | Colab Pro L4/A100 | **$0** |
 | **5. v0.1 Release & Writeup** | Publish model leaderboard, `neutral` vs. `calibrated` prompt sensitivity, shortcut-trap breakdown, and the Binary-vs-Proper RLVR calibration curves. | Local | **$0** |
+
+---
+
+## 4. Independent Positioning & Reward-Hacking Audit Checklist
+
+### Framing & Prior-Art Guardrail (Critical for Paper / Blogpost)
+* **Do NOT claim to be the first to put proper scoring rules into GRPO.** 2025–2026 papers (**RLCR**, **CAPO**, Brier-score GRPO) already optimize proper scoring rules inside GRPO for *scalar verbalized confidence* ("I am 80% confident my final math/QA token is right").
+* **Cite RLCR / CAPO upfront and state the exact novelty boundary:** Prior calibration RL rescales a self-rated scalar probability on discrete correctness; `pullgym` studies **procedural uncertainty propagation in code-writing data-analysis agents**, testing whether distributional RLVR (`log_score_reward` over five continuous predictive quantiles) induces **code-level modeling changes** (parsing `apparatus_note.md` calibration certificates, modeling nuisance/dead-time systematics, using Monte Carlo / profile likelihoods, and respecting physical $r \ge 0$ boundaries).
+
+### Three Technical Warnings to Audit on Every RL Run
+1. **Never Raise `invalid_penalty` Above `floor` (`src/pullgym/rl.py#L318-L334`):**
+   * In official leaderboard scoring (`scoring.py`), missing/malformed `answer.json` gets `prior_score - 1` (`~ -3`), which is higher than a valid `10×` overconfident systematic miss (`-12.6` to `-20`).
+   * `rl.py` correctly overrides this during GRPO (`floor = -10.0`, `invalid_penalty = -12.0`) so crashing never beats submitting quantiles. Keep that strict inequality intact if you ever widen `floor` (e.g. `floor = -20.0` requires `invalid_penalty <= -21.0`).
+   * **Reporting corollary:** Because `evaluate_completions_to_trials()` uses `scoring.score_episode()` (`prior - 1` on invalid), a model whose `valid%` rises from `56%` (`Qwen3-8B` base) to `95%` can see its raw `reward_mean` shift solely from fewer `-3` fallbacks or more `-12` attempts on hard tasks. Always report **`valid%`**, **valid-episode coverage/pull/sharpness**, and **all-episode reward** side by side.
+2. **Audit Tier-1 Sharpness Against Lazy Global Width Inflation:**
+   * Because `10×` overconfident intervals cost `~ -12` while `10×` conservative intervals cost only `~ -1.8`, GRPO can raise OOD coverage the "lazy way" by multiplying every `scipy` standard error by `5×–8×` globally without reading `apparatus_note.md`.
+   * **Mandatory post-training check:** Compare **ID Tier-1 sharpness** (`line_fit`, `weighted_mean`, `counting_rate` — should stay near `~1.0`) against **OOD Tier-3/4 sharpness & coverage** (`dead_time`, `correlated_norm`, `errors_xy`, `no_signal`), and diff generated Python scripts on `dead_time` / `correlated_norm` to verify genuine systematic propagation vs. constant inflation. (Either outcome—true systematic synthesis or exposing lazy width inflation in 8B QLoRA—is an honest, publishable finding!)
+3. **Headline Viral Hook First:**
+   * Don't wait on RL ablations to showcase `pullgym`: running the **commercial frontier table** (`Claude Sonnet`, `DeepSeek`, `Gemini`, `GPT` on `neutral` vs. `calibrated` via `pullgym run-fast`, `~$10–$15`) is the highest-impact empirical hook and validates whether `100B+` frontier agents commit the exact same systematic shortcuts as `Qwen3-8B` (`33.9%` OOD 68%-coverage).

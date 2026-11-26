@@ -8,7 +8,7 @@ The question it answers:
 
 > When an agent reports a 68% interval on a measured quantity, how often does the true value fall inside it? A calibrated analyst is right 68% of the time.
 
-> **Status: pre-release (v0.1 in progress).** Twelve experiment families across four tiers, the scorer, the Harbor exporter and the reporting tool work. Every family's reference analysis is verified to be calibrated. There are no model results yet. Interfaces may change before v0.1.
+> **Status: pre-release (v0.1 in progress).** Twelve experiment families across four tiers, the scorer, the Harbor exporter, the fast runner and the reporting tool work, and every family's reference analysis is verified calibrated. Round 1 `Qwen3-8B` GRPO results (`log_score` vs. `binary`, 960 evaluated episodes across `calibrated` and `neutral`) are recorded in [docs/RLVR_RESULTS.md](docs/RLVR_RESULTS.md); stronger-KL Round 2 RL and commercial frontier baselines are in progress. Interfaces may change before v0.1.
 
 ## Why
 
@@ -16,7 +16,7 @@ Agents are increasingly asked to analyse data, not only write code. A wrong cent
 
 Existing work measures nearby things:
 
-- **Confidence in task success.** Agent uncertainty-quantification work asks whether the agent knows that it solved the task. It does not ask whether its error bar on a measured quantity is right.
+- **Confidence in task success & calibration RL (`RLCR`, `CAPO`).** Agent uncertainty-quantification and recent calibration-aware GRPO papers use proper scoring rules (such as Brier scores) to calibrate a model's scalar verbalized confidence (*"80% sure my final answer is right"*) on discrete QA or math correctness. They do not test whether a code-writing agent propagates instrument systematics, nuisance parameters and physical boundaries into a continuous error bar on a measured quantity.
 - **Distributional estimates without data.** [OpenEstimate](https://arxiv.org/abs/2510.15096) asks models for priors on real-world statistics and finds them often overconfident. The model gets no data and no tools.
 - **Statistics question answering.** [StatABench](https://arxiv.org/abs/2606.22977) scores answers to statistics questions and modelling tasks.
 - **Physics with simulators.** [PhysGym](https://arxiv.org/abs/2507.15550), PhysAgentGym and WorldSolver test law discovery or simulation code. [Collider-Bench](https://arxiv.org/abs/2605.13950) tests reproduction of LHC analyses.
@@ -183,11 +183,34 @@ How the question is asked changes the answers, so results are always reported pe
 
 ## Results & Roadmap
 
-No model results yet. See [docs/ROADMAP.md](docs/ROADMAP.md) for the technical audit, container-overhead diagnosis, low-cost evaluation plan, and next milestones:
+Round 1 controlled GRPO results on `Qwen3-8B` (4-bit QLoRA, 150 steps, `lr=1e-5, beta=0.04`, `enable_thinking=False`; full audit in [docs/RLVR_RESULTS.md](docs/RLVR_RESULTS.md)):
 
-- **Model calibration table:** report 68%/95% coverage, pull width and sharpness across open and frontier agents alongside the human reference analyses.
-- **Fast local/Colab runner (`pullgym run-fast`):** lightweight isolated subprocess runner alongside Harbor Docker export for rapid multi-seed evaluation and RL rollouts.
-- **Proper-scoring-rule RLVR:** compare GRPO trained on `log_score_reward` against binary tolerance rewards on held-out systematic families to test whether distributional RLVR fixes agent overconfidence.
+| Split (`variant`) | Model | `n` | Valid | Pt Acc (valid) | 68% Cov *(68%)* | 95% Cov *(95%)* | Pull Width *(1.0)* | Sharpness *(1.0)* | Reward (valid) | Reward (all) |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| **ID — 8 train families** (`calibrated`) | `qwen3-8b-base` | 120 | 58.3% | 45.7% | 41.4% | 61.4% | 2.07 | 1.00 | −4.669 | −4.558 |
+| | `qwen3-8b_binary_full` | 120 | **74.2%** | 47.2% | 47.2% | 59.6% | 2.87 | 1.00 | −5.395 | −5.160 |
+| | `qwen3-8b_log_score_full` | 120 | 67.5% | **55.6%** | **49.4%** | **63.0%** | **2.22** | 1.00 | **−4.382** | **−4.304** |
+| **OOD — 4 unseen families** (`calibrated`) | `qwen3-8b-base` | 100 | 56.0% | **33.9%** | **33.9%** | **44.6%** | 14.76 | 1.41 | **−9.286** | **−6.518** |
+| | `qwen3-8b_binary_full` | 100 | **68.0%** | 16.2% | 19.1% | 29.4% | 17.81 | 0.74 | −12.491 | −9.473 |
+| | `qwen3-8b_log_score_full` | 100 | 55.0% | 21.8% | 30.9% | 38.2% | **7.91** | 1.15 | −10.150 | −7.047 |
+| **OOD — 4 unseen families** (`neutral`) | `qwen3-8b-base` | 100 | 53.0% | 15.1% | **37.7%** | **45.3%** | **8.44** | 1.46 | **−9.533** | **−6.463** |
+| | `qwen3-8b_binary_full` | 100 | 57.0% | 22.8% | 22.8% | 33.3% | 126.46 | 0.94 | −11.144 | −7.650 |
+| | `qwen3-8b_log_score_full` | 100 | **62.0%** | **25.8%** | 30.6% | 38.7% | 15.04 | 1.05 | −10.080 | −7.387 |
+
+Key Round 1 findings (see [docs/RLVR_RESULTS.md](docs/RLVR_RESULTS.md) for Tier-1 sharpness checks, paired valid-only tables, and script diffs):
+- **Binary RLVR degrades calibration:** Despite raising code validity (`57% → 71%`), `binary` shrank OOD sharpness nearly 2× (`1.41 → 0.74`) and collapsed OOD 68%-coverage by ~15 points on both `calibrated` (`33.9% → 19.1%`) and `neutral` (`37.7% → 22.8%`), while worsening ID Tier-3 systematic reward (`−3.80 → −6.81`).
+- **Log-Score RLVR improves ID calibration without lazy Tier-1 width inflation:** On the 8 training families, `log_score` beat both `base` and `binary` on coverage (`49.4%`), point accuracy (`55.6%`), and reward (`−4.382` valid / `−4.304` all; ID Tier-3 systematics `−2.789` vs. `binary`'s `−6.813`) while keeping clean Tier-1 sharpness at `1.00` (`line_fit`, `weighted_mean`).
+- **Low-KL bottleneck on OOD:** At `lr=1e-5, beta=0.04`, policy shift stayed tiny (`KL ≈ 0.011`) and `log_score` did not yet surpass `base` on unseen OOD families (though it strongly outperformed `binary`). Round 2 (`lr=5e-5, beta=0.01`) is next to test stronger policy adaptation.
+
+See [docs/ROADMAP.md](docs/ROADMAP.md) and [docs/RESUME_TRAINING.md](docs/RESUME_TRAINING.md) for the full technical audit, reward-hacking warnings, and execution plan:
+
+1. **Commercial & open frontier calibration table (`pullgym run-fast`, ~\$10–\$15):** Report 68%/95% coverage, pull width, sharpness, and `neutral` vs. `calibrated` prompt sensitivity across frontier and open tool-using models alongside the human reference analyses.
+2. **Proper-scoring-rule RLVR (`log_score` vs. `binary` GRPO on `Qwen3-8B`):** Train on 8 families and evaluate out-of-distribution on the 4 held-out systematic/boundary families (`dead_time`, `correlated_norm`, `errors_xy`, `no_signal`).
+
+### Known limitations & RL audit warnings
+- **Distinguishing systematic modeling from lazy width inflation:** Under `log_score_reward`, error bars 10× too small cost about `−12` while error bars 10× too wide cost about `−1.8`. A policy that blindly multiplies every statistical error bar by `5×–8×` can raise OOD coverage without reading `apparatus_note.md`. Every RL evaluation must therefore report **Tier-1 clean sharpness (`line_fit`, `weighted_mean`) alongside OOD Tier-3/4 coverage**, plus code-level inspection of whether trained scripts actually parse apparatus systematics.
+- **Valid-rate shifts vs. missing-answer fallback:** During GRPO training (`src/pullgym/rl.py`), invalid/crashing completions receive `invalid_penalty = −12.0 < floor = −10.0` so crashing never beats submitting quantiles. In official episode reporting (`scoring.py`), missing/malformed answers receive `prior − 1` (`~ −3`), which is milder than a `−20` overconfident miss—so tables must report **`valid%`**, **valid-only coverage/sharpness**, and **all-episode mean reward** together to avoid confounding format improvements with calibration improvements.
+- **Single-turn RL vs. multi-turn tool loops:** `scripts/train_grpo.py` trains single-turn Python synthesis from apparatus notes and CSV previews; testing transfer to multi-turn interactive `pullgym run-fast` / Harbor agents is tracked separately.
 
 ## Development
 

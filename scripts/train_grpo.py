@@ -61,12 +61,21 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--num-generations", type=int, default=None)
     p.add_argument("--grad-accum", type=int, default=4, help="Gradient accumulation steps")
     p.add_argument("--lr", type=float, default=1e-5, help="Learning rate")
+    p.add_argument("--beta", type=float, default=0.04, help="KL penalty coefficient")
+    p.add_argument("--max-grad-norm", type=float, default=0.2, help="Gradient clipping norm")
+    p.add_argument("--run-suffix", default="", help="Optional suffix for run/checkpoint/eval names (e.g. r2)")
+    p.add_argument("--lora-rank", type=int, default=None, help="Override LoRA rank")
+    p.add_argument("--save-steps", type=int, default=None, help="Checkpoint save interval")
     p.add_argument("--max-completion-len", type=int, default=None)
     p.add_argument("--gpu-mem-util", type=float, default=None)
+    p.add_argument("--train-temp", type=float, default=0.85, help="GRPO rollout temperature")
+    p.add_argument("--train-top-p", type=float, default=0.95)
+    p.add_argument("--train-top-k", type=int, default=20)
     p.add_argument("--eval-temp", type=float, default=0.7, help="Eval temperature (Qwen3 recommends 0.7)")
     p.add_argument("--eval-top-p", type=float, default=0.8)
     p.add_argument("--eval-top-k", type=int, default=20)
     p.add_argument("--presence-penalty", type=float, default=1.0, help="Prevents Qwen3 comment loops")
+    p.add_argument("--exec-workers", type=int, default=16, help="Parallel Python sandbox workers")
     p.add_argument("--eval-only", action="store_true", help="Skip training and evaluate saved LoRA")
     p.add_argument("--skip-base-eval", action="store_true")
     p.add_argument(
@@ -118,6 +127,7 @@ def eval_with_vllm(
     top_p: float = 0.8,
     top_k: int = 20,
     presence_penalty: float = 1.0,
+    exec_workers: int = 16,
     skip_if_exists: bool = True,
 ) -> Path:
     target_dir = eval_dir / job_id
@@ -155,7 +165,7 @@ def eval_with_vllm(
         job_id=job_id,
         model_name=model_label,
         timeout_sec=15.0,
-        max_workers=8,
+        max_workers=exec_workers,
     )
     print(f"\n=== {model_label} ({job_id}) ===", flush=True)
     print(report(job_dir, group_by="model,family,variant", truth_bins=1), flush=True)
@@ -217,18 +227,21 @@ def main() -> int:
     vram_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
     is_a100 = vram_gb >= 35.0
 
-    lora_rank = 32 if is_a100 else 16
+    lora_rank = args.lora_rank or (32 if is_a100 else 16)
     max_prompt_len = 1536
     max_comp_len = args.max_completion_len or (2048 if is_a100 else 1536)
     max_seq_len = max_prompt_len + max_comp_len
     gpu_mem_util = args.gpu_mem_util or (0.60 if is_a100 else 0.50)
     num_gens = args.num_generations or (8 if is_a100 else 6)
     max_steps = args.steps if args.steps is not None else (20 if args.sanity else 350)
-    save_steps = 10 if args.sanity else 50
+    save_steps = args.save_steps or (10 if args.sanity else 50)
 
     slug = model_slug(args.model)
     out_root = Path(args.out_dir)
-    run_name = f"{slug}_{args.arm}_{'sanity' if args.sanity else 'full'}"
+    tag = "sanity" if args.sanity else "full"
+    if args.run_suffix:
+        tag = f"{tag}_{args.run_suffix}"
+    run_name = f"{slug}_{args.arm}_{tag}"
     ckpt_dir = out_root / "checkpoints" / run_name
     lora_dir = out_root / "loras" / run_name
     eval_dir = out_root / "eval_runs"
@@ -306,6 +319,7 @@ def main() -> int:
         top_p=args.eval_top_p,
         top_k=args.eval_top_k,
         presence_penalty=args.presence_penalty,
+        exec_workers=args.exec_workers,
     )
 
     if not args.skip_base_eval:
@@ -338,16 +352,23 @@ def main() -> int:
     if not args.eval_only:
         if args.arm == "log_score":
             base_reward_fn = make_log_score_reward_fn(
-                floor=-10.0, invalid_penalty=-12.0, timeout_sec=8.0, max_workers=8
+                floor=-10.0,
+                invalid_penalty=-12.0,
+                timeout_sec=8.0,
+                max_workers=args.exec_workers,
             )
             invalid_val = -12.0
         else:
             base_reward_fn = make_binary_reward_fn(
-                k=1.0, invalid_penalty=-1.0, timeout_sec=8.0, max_workers=8
+                k=1.0,
+                invalid_penalty=-1.0,
+                timeout_sec=8.0,
+                max_workers=args.exec_workers,
             )
             invalid_val = -1.0
 
         counter = {"n": 0}
+        batch_log_path = out_root / f"batch_metrics_{run_name}.jsonl"
 
         def logged_reward_fn(completions, files_json, truth_json, family=None, **kwargs):
             rewards = base_reward_fn(
@@ -357,6 +378,17 @@ def main() -> int:
             arr = np.asarray(rewards, dtype=float)
             valid_rate = float(np.mean(arr > invalid_val))
             fam_str = family[0] if family else "?"
+            rec = {
+                "batch": counter["n"],
+                "family": fam_str,
+                "valid_rate": valid_rate,
+                "mean": float(arr.mean()),
+                "std": float(arr.std()),
+                "min": float(arr.min()),
+                "max": float(arr.max()),
+            }
+            with batch_log_path.open("a", encoding="utf-8") as bf:
+                bf.write(json.dumps(rec) + "\n")
             if counter["n"] <= 5 or counter["n"] % 10 == 0:
                 print(
                     f"[batch {counter['n']:4d} | {fam_str:<21s}] "
@@ -374,7 +406,7 @@ def main() -> int:
                 )
             return rewards
 
-        training_args = GRPOConfig(
+        grpo_kwargs = dict(
             use_vllm=True,
             learning_rate=args.lr,
             adam_beta1=0.9,
@@ -383,7 +415,10 @@ def main() -> int:
             warmup_steps=max(2, int(0.05 * max_steps)),
             lr_scheduler_type="cosine",
             optim="paged_adamw_8bit",
-            beta=0.04,
+            beta=args.beta,
+            temperature=args.train_temp,
+            top_p=args.train_top_p,
+            top_k=args.train_top_k,
             logging_steps=5,
             per_device_train_batch_size=num_gens,
             gradient_accumulation_steps=args.grad_accum,
@@ -391,11 +426,19 @@ def main() -> int:
             max_completion_length=max_comp_len,
             max_steps=max_steps,
             save_steps=save_steps,
-            save_total_limit=4,
-            max_grad_norm=0.2,
+            save_total_limit=6,
+            max_grad_norm=args.max_grad_norm,
             report_to="none",
             output_dir=str(ckpt_dir),
         )
+        if args.presence_penalty:
+            import inspect
+
+            if "generation_kwargs" in inspect.signature(GRPOConfig.__init__).parameters:
+                grpo_kwargs["generation_kwargs"] = {
+                    "presence_penalty": args.presence_penalty
+                }
+        training_args = GRPOConfig(**grpo_kwargs)
         trainer = GRPOTrainer(
             model=model,
             processing_class=tokenizer,
@@ -406,6 +449,9 @@ def main() -> int:
         has_ckpt = any(ckpt_dir.glob("checkpoint-*"))
         print(f"Starting GRPO training (resume_from_checkpoint={has_ckpt})...", flush=True)
         trainer.train(resume_from_checkpoint=has_ckpt)
+        (out_root / f"trainer_history_{run_name}.json").write_text(
+            json.dumps(trainer.state.log_history, indent=2), encoding="utf-8"
+        )
         model.save_lora(str(lora_dir))
         print(f"Saved trained LoRA to {lora_dir}", flush=True)
 
