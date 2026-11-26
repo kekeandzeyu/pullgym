@@ -1,6 +1,6 @@
 [project]
 name = "pullgym"
-version = "0.1.0.dev0"
+version = "0.1.0"
 description = "An agent environment that scores honest error bars on simulated physics measurements."
 readme = "README.md"
 license = "MIT"
