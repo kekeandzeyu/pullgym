@@ -370,3 +370,78 @@ def test_cli_run_fast_oracle_and_prior(tmp_path, capsys):
     out2 = capsys.readouterr().out
     assert "Saved 2 trial(s)" in out2
     assert isinstance(PriorAgent(), PriorAgent)
+
+
+def test_http_client_retries_incomplete_read_and_retry_after(monkeypatch):
+    import http.client
+    import io
+    import urllib.error
+    import urllib.request
+
+    from pullgym.runner import openai_http_chat
+
+    sleeps = []
+    monkeypatch.setattr("pullgym.runner.time.sleep", lambda s: sleeps.append(s))
+
+    attempts = [0]
+
+    class _FakeResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps({"choices": [{"message": {"role": "assistant", "content": "ok"}}]}).encode()
+
+    def fake_urlopen(req, timeout=None):
+        attempts[0] += 1
+        if attempts[0] == 1:
+            raise http.client.IncompleteRead(b"")
+        if attempts[0] == 2:
+            raise urllib.error.HTTPError(
+                req.full_url, 429, "Too Many Requests", {"Retry-After": "3"}, io.BytesIO(b"rate limited")
+            )
+        return _FakeResp()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    chat = openai_http_chat("https://example.invalid/v1", api_key="k", max_retries=4)
+    resp = chat({"model": "m", "messages": []})
+    assert resp["choices"][0]["message"]["content"] == "ok"
+    assert attempts[0] == 3
+    assert len(sleeps) == 2 and sleeps[1] >= 4.0
+
+
+def test_final_turn_reminder_injected_before_cutoff(tmp_path):
+    fam = get_family("line_fit")
+    seen_tool_contents = []
+
+    def fake_chat(payload):
+        tool_msgs = [m for m in payload["messages"] if m["role"] == "tool"]
+        if tool_msgs:
+            seen_tool_contents.append(json.loads(tool_msgs[-1]["content"]))
+        if len(tool_msgs) == 0:
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "tc_1",
+                                    "type": "function",
+                                    "function": {"name": "run_bash", "arguments": json.dumps({"command": "ls data"})},
+                                }
+                            ],
+                        }
+                    }
+                ]
+            }
+        return {"choices": [{"message": {"role": "assistant", "content": "Stopping."}}]}
+
+    agent = OpenAICompatibleAgent(model="mock/budget", chat_fn=fake_chat, max_turns=2)
+    run_episode(fam, 0, "dev", "calibrated", agent, tmp_path / "budget_job")
+    assert len(seen_tool_contents) == 1
+    assert "Final turn next" in seen_tool_contents[0].get("note", "")

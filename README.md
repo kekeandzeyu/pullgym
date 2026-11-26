@@ -8,7 +8,7 @@ The question it answers:
 
 > When an agent reports a 68% interval on a measured quantity, how often does the true value fall inside it? A calibrated analyst is right 68% of the time.
 
-> **Status: pre-release (v0.1 in progress).** Twelve experiment families across four tiers, the scorer, the Harbor exporter, the fast runner and the reporting tool work, and every family's reference analysis is verified calibrated. Controlled `Qwen3-8B` GRPO results (`log_score` vs. `binary` across two KL regimes, 1,600 evaluated episodes on `calibrated` and `neutral`) are published in [docs/RLVR_RESULTS.md](docs/RLVR_RESULTS.md); commercial frontier baselines are next. Interfaces may change before v0.1.
+> **Status: v0.1 ready for release.** Twelve experiment families across four tiers, the scorer, the Harbor exporter, the fast runner and the reporting tool work, and every family's reference analysis is verified calibrated. Multi-turn commercial/open frontier baselines (`deepseek-flash` across `calibrated` and `neutral`, `kimi-k3.1-pro`, `qwen3.8-omni-flash`, `qwen/qwen3.8-27b`, and `nemotron-3-ultra-550b`) and controlled `Qwen3-8B` GRPO results (`log_score` vs. `binary` across two KL regimes, 1,600 evaluated episodes in [docs/RLVR_RESULTS.md](docs/RLVR_RESULTS.md)) are published below. Interfaces may change before v0.2.
 
 ## Why
 
@@ -183,6 +183,28 @@ How the question is asked changes the answers, so results are always reported pe
 
 ## Results & Roadmap
 
+### Commercial & Open Frontier Baselines (`pullgym run-fast`, `dev` split, seeds `0..14`)
+
+Evaluated via multi-turn `pullgym run-fast` (`run_python` / `run_bash` in `tools` mode with `max_turns=20, max_tokens=8192`, or Python-block `code` mode for free-tier token budgets) alongside the exact seed-paired `oracle` (human reference) and `prior` baselines:
+
+| Model | Mode / Scope | Variant | `n` | Valid | 68% Cov *(68%)* | 95% Cov *(95%)* | Pull Width *(1.0)* | Sharpness *(1.0)* | Reward (valid) | Reward (all) |
+| :--- | :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `oracle` *(human ref)* | Local reference (12 fam × 15) | `calibrated` | 180 | 100% | 67.2% | 90.6% | 0.97 | 1.00 | −0.074 | −0.074 |
+| **`deepseek-flash`** | DeepSeek (`tools`, 12 fam × 15) | `calibrated` | **180** | 84% | **66.2%** | **89.4%** | **1.02** | **1.00** | **−0.127** | **−0.802** |
+| **`deepseek-flash`** | DeepSeek (`tools`, 12 fam × 15) | `neutral` | **180** | 82% | **68.0%** | **91.2%** | **0.97** | **1.00** | **−0.085** | **−0.838** |
+| **`kimi-k3.1-pro`** | Aliyun (`code`, all 12 fam, seeds 0–2) | `calibrated` | **29** | **93%** | **70.4%** | **92.6%** | **0.94** | **1.00** | **+0.023** | **−0.234** |
+| `qwen3.8-omni-flash` | Aliyun (`code`, Tiers 1–2, 6 fam × 5) | `calibrated` | 30 | 100% | 73.3% | 90.0% | 0.83 | 1.01 | −0.040 | −0.040 |
+| `qwen/qwen3.8-27b` | Groq (`code`, Tier 1, free TPM cap) | `calibrated` | 18 | 100% | 77.8% | 94.4% | 0.70 | 1.01 | +0.073 | +0.073 |
+| `nemotron-3-ultra-550b` | OpenRouter `:free` (`code`, 7 fam) | `calibrated` | 7 | 86% | 100.0% | 100.0% | 0.28 | 1.00 | +0.415 | −0.479 |
+| `prior` *(uninformative)* | Local prior (12 fam × 15) | `calibrated` | 180 | 100% | 62.8% | 98.9% | 0.91 | 38.19 | −3.046 | −3.046 |
+
+Key frontier findings:
+- **Multi-turn frontier agents reach near-oracle calibration on `v0.1` — even on `neutral`:** On valid episodes, `deepseek-flash` matches the human `oracle` on both `calibrated` (`66.2%` cov68, `sharp=1.00`, `rew_v=−0.127`) and `neutral` (`68.0%` cov68, `sharp=1.00`, `rew_v=−0.085`), including the 4 hardest OOD systematic/boundary families (`n=60`: `neutral` `60.9%` cov68 / `93.5%` cov95 / `rew_v=−0.101` vs. `oracle` `60.0%` / `91.7%` / `−0.109`), and `kimi-k3.1-pro` achieves `70.4%` cov68 / `92.6%` cov95 / `rew_v=+0.023` (`93%` valid) across all 12 families.
+- **Agentic turn-budget over-iteration, not statistical error, drives `deepseek-flash`'s remaining gap to `oracle`:** Across all 360 `deepseek-flash` episodes, there were **zero** malformed-JSON answers; invalid episodes (`peak_background` `40–47%` valid, `dead_time` `60–67%` valid) were caused by exhausting `max_turns=20` on extra diagnostic checks before writing `answer.json`. In contrast, `code` mode (`kimi-k3.1-pro`, `qwen3.8-omni-flash`) bundles exploratory analysis into 4–6 Python blocks and avoids turn-limit cutoffs. (`pullgym run-fast` now injects a final-turn reminder when `answer.json` is not yet written.)
+- **Sharp capability gap vs. 8B models motivates both RLVR distillation and harder `v0.2` physics traps:** Whereas frontier multi-turn agents already parse `v0.1`'s explicit `apparatus_note.md` systematics cleanly, single-turn `Qwen3-8B` collapses to `38.1%` cov68 (`rew_v=−6.721`), making `v0.1` an effective RLVR benchmark for small open models while pointing directly to harder `v0.2` traps (`look_elsewhere`, `outliers`, `unit_mismatch`, unprompted systematics).
+
+### Controlled Distributional RLVR vs. Binary GRPO (`Qwen3-8B`)
+
 Controlled GRPO results on `Qwen3-8B` (4-bit QLoRA, 150 steps, `enable_thinking=False`; Round 2 effective RLVR regime `lr=5e-5, beta=0.01`, plus Round 1 conservative-KL ablation in [docs/RLVR_RESULTS.md](docs/RLVR_RESULTS.md)):
 
 | Split (`variant`) | Model | `n` | Valid | Pt Acc (valid) | 68% Cov *(68%)* | 95% Cov *(95%)* | Pull Width *(1.0)* | Sharpness *(1.0)* | Reward (valid) | Reward (all) |
@@ -214,10 +236,11 @@ Key findings (full tables, Round 1 vs. Round 2 comparison, and side-by-side scri
 
 ### Next steps (`v0.1` → `v0.2`)
 
-See [docs/ROADMAP.md](docs/ROADMAP.md) for the updated post-RLVR roadmap and frontier evaluation commands:
+See [docs/ROADMAP.md](docs/ROADMAP.md) for the updated roadmap:
 
-1. **Commercial & open frontier calibration leaderboard (`pullgym run-fast`, ~\$8–\$15):** Evaluate multi-turn frontier agents (`Claude Sonnet`, `DeepSeek`, `Gemini`, `GPT`) across `neutral` and `calibrated` variants (`12 families × 25 seeds = 300 episodes/variant`) alongside the human reference analyses.
-2. **Multi-turn interactive RLVR (`v0.2`):** Extend `log_score` GRPO from single-turn script synthesis to multi-turn `run_python` / `run_bash` rollouts (and thinking-enabled models) to lift OOD schema validity above `95%`.
+1. **Tag `v0.1` & expand frontier coverage:** Submit `pullgym` to Harbor's community benchmark registry and add `Claude` / `GPT` / `Gemini` rows alongside `deepseek-flash` and `kimi-k3.1-pro`.
+2. **Harder `v0.2` physics trap families:** Since frontier multi-turn agents already approach oracle calibration on `v0.1`'s explicit systematics, add harder unprompted/adversarial lab traps: `outliers` (non-Gaussian cosmic-ray glitches), `look_elsewhere` (trials-factor peak scanning), and `unit_mismatch` (subtle unit discrepancies between CSVs and lab logbooks).
+3. **Multi-turn interactive RLVR (`v0.2`):** Extend `log_score` GRPO from single-turn script synthesis to multi-turn `run_python` / `run_bash` rollouts (and thinking-enabled models) to lift small-model OOD schema validity above `95%`.
 
 ### Known limitations & RL audit warnings
 - **Distinguishing systematic modeling from lazy width inflation:** Under `log_score_reward`, error bars 10× too small cost about `−12` while error bars 10× too wide cost about `−1.8`. A policy that blindly multiplies every statistical error bar by `5×–8×` can raise OOD coverage without reading `apparatus_note.md`. Every RL evaluation must therefore report **Tier-1 clean sharpness (`line_fit`, `weighted_mean`) alongside OOD Tier-3/4 coverage**, plus code-level inspection of whether trained scripts actually parse apparatus systematics.

@@ -9,6 +9,7 @@ so ``pullgym report`` works identically on both Harbor and run-fast outputs.
 from __future__ import annotations
 
 import concurrent.futures
+import http.client
 import json
 import os
 import re
@@ -304,7 +305,7 @@ def openai_http_chat(
     base_url: str,
     api_key: str | None = None,
     timeout_sec: float = 180.0,
-    max_retries: int = 4,
+    max_retries: int = 5,
 ) -> ChatFn:
     """Create a stdlib-only HTTP client for OpenAI-compatible /chat/completions."""
     endpoint = base_url.rstrip("/") + "/chat/completions"
@@ -329,15 +330,28 @@ def openai_http_chat(
                     detail = e.read().decode("utf-8", errors="replace")[:500]
                 except Exception:
                     pass
+                retry_after = e.headers.get("Retry-After") if e.headers else None
                 last_err = AgentError(f"HTTP {e.code} from {endpoint}: {detail}")
                 if e.code in {429, 500, 502, 503, 504} and attempt < max_retries:
-                    time.sleep(min(2.0**attempt, 20.0))
+                    wait = min(2.0**attempt, 30.0)
+                    if retry_after:
+                        try:
+                            wait = max(wait, min(float(retry_after) + 1.0, 60.0))
+                        except ValueError:
+                            pass
+                    time.sleep(wait)
                     continue
                 raise last_err from None
-            except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as e:
+            except (
+                urllib.error.URLError,
+                http.client.HTTPException,
+                TimeoutError,
+                OSError,
+                json.JSONDecodeError,
+            ) as e:
                 last_err = AgentError(f"Request error calling {endpoint}: {e}")
                 if attempt < max_retries:
-                    time.sleep(min(2.0**attempt, 20.0))
+                    time.sleep(min(2.0**attempt, 30.0))
                     continue
                 raise last_err from None
         raise last_err or AgentError(f"Failed calling {endpoint}")
@@ -357,9 +371,9 @@ class OpenAICompatibleAgent:
         base_url: str | None = None,
         api_key: str | None = None,
         chat_fn: ChatFn | None = None,
-        max_turns: int = 10,
+        max_turns: int = 20,
         temperature: float = 0.0,
-        max_tokens: int = 4096,
+        max_tokens: int = 8192,
         tool_mode: str = "tools",
         http_timeout_sec: float = 180.0,
         extra_body: dict[str, Any] | None = None,
@@ -452,10 +466,19 @@ class OpenAICompatibleAgent:
             result.transcript.append(transcript_msg)
 
             if self.tool_mode == "tools" and tool_calls:
-                for tc in tool_calls:
+                for idx_tc, tc in enumerate(tool_calls):
                     fn = tc.get("function") or {}
                     tname = fn.get("name", "")
                     out = self._execute_tool(tname, fn.get("arguments", "{}"), workspace)
+                    if (
+                        idx_tc == len(tool_calls) - 1
+                        and turn == self.max_turns - 1
+                        and not workspace.answer_path.is_file()
+                    ):
+                        out["note"] = (
+                            f"Final turn next ({self.max_turns}/{self.max_turns}): "
+                            f"write and verify `{FAST_ANSWER_PATH}` now."
+                        )
                     result.log_lines.append(
                         f"turn {turn}: tool={tname} exit={out.get('exit_code', 'err')}"
                     )
@@ -487,6 +510,11 @@ class OpenAICompatibleAgent:
                     f"STDERR:\n{out['stderr']}\n"
                     f"`{FAST_ANSWER_PATH}` exists: {workspace.answer_path.is_file()}"
                 )
+                if turn == self.max_turns - 1 and not workspace.answer_path.is_file():
+                    feedback += (
+                        f"\nNote: Final turn next ({self.max_turns}/{self.max_turns}) — "
+                        f"write and verify `{FAST_ANSWER_PATH}` now."
+                    )
                 fb_msg = {"role": "user", "content": feedback}
                 messages.append(fb_msg)
                 result.transcript.append(fb_msg)
