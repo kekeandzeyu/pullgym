@@ -1,100 +1,119 @@
 # pullgym — Distributional RLVR (`log_score`) vs. Binary GRPO (`binary`) Results
 
-## Positioning & Scope
+## Positioning & Prior-Art Boundary
 
-Recent calibration-aware RL papers (**RLCR**, **CAPO**, Brier-score GRPO) optimize proper scoring rules inside GRPO to calibrate a model's *scalar verbalized confidence* (*"I am 80% sure my final answer is right"*) on discrete QA or math correctness. `pullgym` studies a distinct setting: **procedural uncertainty propagation in code-writing scientific data-analysis agents**, testing whether proper distributional RLVR (`log_score_reward` over five continuous predictive quantiles `q025, q16, q50, q84, q975`) induces **code-level modeling changes** (reading calibration certificates from `apparatus_note.md`, propagating systematics/nuisance parameters, and respecting physical boundaries) rather than overconfident point estimation or lazy width inflation.
+Recent calibration-aware RL papers (**RLCR**, **CAPO**, Brier-score GRPO) optimize proper scoring rules inside GRPO to calibrate a model's *scalar verbalized confidence* (*"I am 80% sure my final answer is right"*) on discrete QA or math correctness. `pullgym` studies a distinct setting: **procedural uncertainty propagation in code-writing scientific data-analysis agents**, testing whether proper distributional RLVR (`log_score_reward` over five continuous predictive quantiles `q025, q16, q50, q84, q975`) induces **code-level modeling changes** (reading calibration certificates from `apparatus_note.md`, propagating systematics/nuisance parameters, and avoiding unit/formula bugs in error bars) rather than overconfident point estimation or lazy global width inflation.
 
-> **Scope note:** All runs below train and evaluate **single-turn Python code synthesis** (`scripts/train_grpo.py`, `src/pullgym/rl.py`) from full `apparatus_note.md` + CSV previews, with isolated subprocess execution and zero LLM judge. Transfer to multi-turn interactive `pullgym run-fast` / Harbor agents is tracked separately.
+> **Scope note:** All runs below train and evaluate **single-turn Python code synthesis** (`scripts/train_grpo.py`, `src/pullgym/rl.py`) from full `apparatus_note.md` + CSV previews, executed in isolated read-only subprocesses with zero LLM judge. Transfer to multi-turn interactive `pullgym run-fast` / Harbor agents is tracked separately.
 
 ---
 
-## Round 1 Experimental Setup (RTX 4090 48 GB)
+## Experimental Setup (RTX 4090 48 GB, 1,600 Total Evaluated Episodes)
 
-Controlled two-arm GRPO ablation from the exact same base model, dataset split, rollout budget, and evaluation sampling parameters:
+We ran two controlled two-arm GRPO rounds from the exact same base model, dataset split, rollout budget, and evaluation parameters:
 
-- **Base model:** `unsloth/Qwen3-8B-unsloth-bnb-4bit` (4-bit QLoRA, `r=32`, `alpha=32`, 87.3M trainable params, `enable_thinking=False`)
-  - *Why `enable_thinking=False`?* A 20-episode OOD probe of `Qwen3-8B` with `enable_thinking=True` and `max_tokens=3072` hit `20/20` truncations (`0%` valid) before emitting a complete Python script.
+- **Base model:** `unsloth/Qwen3-8B-unsloth-bnb-4bit` (4-bit QLoRA, `r=32`, `alpha=32`, 87.3M trainable params, `enable_thinking=False`).
+  - *Why `enable_thinking=False`?* A 20-episode OOD probe of `Qwen3-8B` with `enable_thinking=True` and `max_tokens=3072` truncated on `20/20` episodes (`0%` valid) before emitting a complete Python script.
 - **Training split (8 families × 250 seeds = 2,000 episodes, `variant="calibrated"`):** `line_fit`, `weighted_mean`, `counting_rate`, `decay_background`, `peak_background`, `low_count_rate`, `voltmeter_gain`, `underestimated_errors`.
-- **Held-out OOD test split (4 unseen systematic/boundary families × 25 seeds = 100 episodes):** `errors_xy`, `correlated_norm`, `dead_time`, `no_signal` (+ 120 ID eval episodes across the 8 training families, evaluated on both `calibrated` and `neutral` OOD prompts — **960 total evaluated episodes**).
-- **Shared GRPO hyperparameters:** `steps=150`, `num_generations=8`, `grad_accum=4` (effective batch size 32; 4,800 total rollouts per arm), `lr=1e-5` (cosine), `beta=0.04`, `max_grad_norm=0.2`, `max_completion_len=1536`, rollout sampling `temp=0.85, top_p=0.95, top_k=20, presence_penalty=1.0`; eval sampling `temp=0.7, top_p=0.8, top_k=20, presence_penalty=1.0, seed=42`.
-- **Reward arms:**
-  - **Arm A (`binary`):** `+1.0` if valid and `|q50 − truth| ≤ 1.0 × ref_sigma`, `0.0` if valid miss, `−1.0` if invalid/crash.
-  - **Arm B (`log_score`):** `distributional_log_score_reward` with `floor = −10.0`, `cap = +5.0`, `invalid_penalty = −12.0` (strictly maintaining `invalid_penalty < floor` so crashing never beats reporting a wide interval).
+- **Held-out OOD test split (4 unseen systematic/boundary families × 25 seeds = 100 episodes):** `errors_xy`, `correlated_norm`, `dead_time`, `no_signal` — evaluated on both `calibrated` and `neutral` prompt variants (+ 120 ID eval episodes per model on `calibrated`).
+- **Reward arms (strict `invalid_penalty < floor` invariant preserved):**
+  - **Arm A (`binary`):** `+1.0` if valid and `|q50 − θ| ≤ 1.0 × σ_ref`, `0.0` if valid miss, `−1.0` if invalid/crash.
+  - **Arm B (`log_score`):** `distributional_log_score_reward` with `floor = −10.0`, `cap = +5.0`, `invalid_penalty = −12.0`.
+- **Two policy-shift regimes (both `150` steps, `num_generations=8`, `grad_accum=4`, `4,800` rollouts/arm):**
+  - **Round 1 (conservative KL):** `lr=1e-5`, `beta=0.04`, `max_grad_norm=0.2` → small policy shift (`KL ≈ 0.011–0.012`).
+  - **Round 2 (effective RLVR):** `lr=5e-5`, `beta=0.01`, `max_grad_norm=1.0` → full policy adaptation (`KL = 0.076` for `log_score_r2`, `0.058` for `binary_r2`; batch valid rate reached **`99.1%`** and **`98.9%`**).
+
+![Round 2 RLVR Comparison & Audit](assets/rlvr_comparison.png)
 
 ---
 
-## Round 1 Headline Results
+## Full Quantitative Results
 
-> **Valid-rate vs. fallback audit note (`docs/ROADMAP.md` §4):** Official `pullgym report` scores missing/invalid answers as `prior − 1` (`~ −3`), which is milder than a `−20` overconfident systematic miss. Every table below therefore reports **`valid%`**, **valid-only point accuracy (`|q50 − θ| ≤ σ_ref`)**, **valid-only coverage / pull width / sharpness / mean reward (`rew_v`)**, and **all-episode mean reward (`rew_all`)** side by side, followed by the **paired valid-on-all-3** intersection to eliminate selection bias.
+> **Valid-rate vs. fallback audit note (`docs/ROADMAP.md` §4):** Official `pullgym report` scores missing/invalid answers as `prior − 1` (`~ −3`), which is milder than a `−20` overconfident systematic miss. Every table below therefore reports **`valid%`**, **valid-only point accuracy (`|q50 − θ| ≤ σ_ref`)**, **valid-only coverage / pull width / sharpness / mean reward (`rew_v`)**, and **all-episode mean reward (`rew_all`)** side by side, followed by **paired valid-only intersections** with zero selection or fallback bias.
 
-### 1. In-Distribution (8 Train Families, `calibrated`, `n = 120`)
+### 1. All 12 Families Combined (`calibrated`, `n = 220`)
 
-| Model | Valid | Pt Acc (valid) | Pt Acc (all) | 68% Cov *(68%)* | 95% Cov *(95%)* | Pull Width *(1.0)* | Sharpness *(1.0)* | Reward (valid) | Reward (all) |
-| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `qwen3-8b-base` | 58.3% | 45.7% | 26.7% | 41.4% | 61.4% | 2.07 | 1.00 | −4.669 | −4.558 |
-| `qwen3-8b_binary_full` | **74.2%** | 47.2% | 35.0% | 47.2% | 59.6% | 2.87 | 1.00 | −5.395 | −5.160 |
-| `qwen3-8b_log_score_full` | 67.5% | **55.6%** | **37.5%** | **49.4%** | **63.0%** | **2.22** | 1.00 | **−4.382** | **−4.304** |
+| Model | Regime | Valid | Pt Acc (valid) | Pt Acc (all) | 68% Cov *(68%)* | 95% Cov *(95%)* | Pull Width *(1.0)* | Sharpness *(1.0)* | Reward (valid) | Reward (all) |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `qwen3-8b-base` | Base | 57.3% | 40.5% | 23.2% | 38.1% | 54.0% | 3.33 | 1.00 | −6.721 | −5.449 |
+| `qwen3-8b_binary_full` | R1 (`KL=0.012`) | 71.4% | 33.8% | 24.1% | 35.0% | 46.5% | 4.92 | 1.00 | −8.468 | −7.120 |
+| `qwen3-8b_log_score_full` | R1 (`KL=0.011`) | 61.8% | 41.9% | 25.9% | 41.9% | 52.9% | 3.64 | 1.00 | −6.714 | −5.550 |
+| `qwen3-8b_binary_full_r2` | R2 (`KL=0.058`) | **84.1%** | 47.6% | 40.0% | 52.4% | 66.5% | 2.32 | 1.00 | −4.977 | −4.786 |
+| **`qwen3-8b_log_score_full_r2`** | **R2 (`KL=0.076`)** | 78.6% | **51.4%** | **40.5%** | **56.1%** | **72.3%** | **1.67** | **1.00** | **−3.450** | **−3.423** |
 
-### 2. ID Breakdown by Tier & Lazy Global Width-Inflation Audit
+### 2. In-Distribution (8 Train Families, `calibrated`, `n = 120`) & Tier Breakdown
 
 | Slice | Model | Valid | Pt Acc (valid) | 68% Cov | 95% Cov | Pull Width | Sharpness | Reward (valid) | Reward (all) |
 | :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| **Tier-1 Clean** (`line_fit`, `weighted_mean`, `counting_rate`, `n=45`) | `base` | 77.8% | 51.4% | 54.3% | 71.4% | 1.66 | **1.00** | −3.796 | −4.035 |
-| | `binary` | **95.6%** | **62.8%** | **67.4%** | **79.1%** | **0.97** | **1.00** | **−2.384** | **−2.460** |
-| | `log_score` | 86.7% | 59.0% | 56.4% | 71.8% | 1.65 | **1.00** | −3.738 | −3.910 |
+| **ID All** (`n=120`) | `base` | 58.3% | 45.7% | 41.4% | 61.4% | 2.07 | 1.00 | −4.669 | −4.558 |
+| | `binary_r2` | 98.3% | 63.6% | **63.6%** | 80.5% | 1.15 | 1.00 | −1.710 | −1.738 |
+| | **`log_score_r2`** | **100.0%** | **64.2%** | 63.3% | **85.0%** | **1.14** | **1.00** | **−0.528** | **−0.528** |
+| **Tier-1 Clean** (`line_fit`, `weighted_mean`, `counting_rate`, `n=45`) *(Lazy Inflation Audit)* | `base` | 77.8% | 51.4% | 54.3% | 71.4% | 1.66 | **1.00** | −3.796 | −4.035 |
+| | `binary_r2` | 97.8% | 68.2% | 75.0% | 90.9% | 0.55 | 1.01 *(counting=10.0×)* | −0.632 | −0.745 |
+| | **`log_score_r2`** | **100.0%** | **68.9%** | **73.3%** | **88.9%** | **0.77** | **1.00** *(all 3 ≈ 1.0×)* | **−0.181** | **−0.181** |
 | **Tier-2 Nuisance** (`decay_bg`, `peak_bg`, `low_count_rate`, `n=45`) | `base` | 31.1% | 21.4% | 28.6% | 50.0% | 2.13 | 1.22 | −8.153 | −5.286 |
-| | `binary` | **53.3%** | 25.0% | 29.2% | 41.7% | 3.87 | 1.29 | −9.490 | −7.073 |
-| | `log_score` | 46.7% | **42.9%** | **47.6%** | **52.4%** | 3.68 | 1.15 | **−7.170** | **−5.208** |
+| | `binary_r2` | 97.8% | **63.6%** | **68.2%** | 93.2% | **0.95** | 0.97 | **−0.142** | **−0.162** |
+| | **`log_score_r2`** | **100.0%** | 62.2% | 66.7% | **95.6%** | 1.03 | 1.13 | −0.337 | −0.337 |
 | **Tier-3 ID Systematics** (`voltmeter_gain`, `underestimated_errors`, `n=30`) | `base` | 70.0% | 52.4% | 28.6% | 52.4% | 2.89 | 0.50 | −3.803 | −4.249 |
-| | `binary` | **73.3%** | 40.9% | 27.3% | 40.9% | 3.98 | 0.37 | −6.813 | −6.339 |
-| | `log_score` | 70.0% | **61.9%** | **38.1%** | **57.1%** | **2.04** | **0.53** | **−2.789** | **−3.537** |
+| | `binary_r2` | **100.0%** | 56.7% | 40.0% | 46.7% | 3.50 | 0.45 | −5.591 | −5.591 |
+| | **`log_score_r2`** | **100.0%** | **60.0%** | **43.3%** | **63.3%** | **2.09** | **0.56** | **−1.336** | **−1.336** |
 
-Notable ID family wins for `log_score` over `binary`:
-- **`decay_background`:** `log_score` reached **75.0% cov68 / 75.0% cov95**, pull width **0.98**, sharpness **0.96**, valid reward **−2.930** (vs. `binary`: 27.3% cov68, pull width 3.25, valid reward −9.423).
-- **`underestimated_errors`:** `log_score` improved `cov68` **14.3% → 37.5%**, `cov95` **42.9% → 62.5%**, sharpness **0.36 → 0.81**, valid reward **−3.879 → −1.269** (vs. `binary`: 14.3% cov68 / 14.3% cov95, sharpness 0.36, valid reward **−7.450**).
+Per-family highlights at `100%` valid for **`log_score_r2`**:
+- `line_fit`: `73.3%` cov68 / `93.3%` cov95, sharpness **`1.00`**, reward **`+0.040`**
+- `counting_rate`: `93.3%` cov68 / `93.3%` cov95, sharpness **`1.03`**, reward **`−0.212`** (vs. `binary_r2`: sharpness **`10.04`**, reward `−1.511`)
+- `peak_background`: `20% → 100%` valid, `0.0% → 73.3%` cov68 / `100.0%` cov95, sharpness **`0.96`**, reward **`−8.447 → −0.079`**
+- `underestimated_errors`: `47% → 100%` valid, `14.3% → 53.3%` cov68 / `73.3%` cov95, pull width **`1.21`**, reward **`−0.389`** (vs. `binary_r2`: `−2.151`)
+- `voltmeter_gain`: reward **`−2.283`** vs. `binary_r2` **`−9.031`** (**+6.75 reward gap** at identical `53.3%` point accuracy!)
 
 ### 3. Held-Out Out-of-Distribution (4 Unseen Families, `n = 100` per variant)
 
 | Variant | Model | Valid | Pt Acc (valid) | Pt Acc (all) | 68% Cov *(68%)* | 95% Cov *(95%)* | Pull Width *(1.0)* | Sharpness *(1.0)* | Reward (valid) | Reward (all) |
 | :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `calibrated` | `qwen3-8b-base` | 56.0% | **33.9%** | **19.0%** | **33.9%** | **44.6%** | 14.76 | 1.41 | **−9.286** | **−6.518** |
-| `calibrated` | `qwen3-8b_binary_full` | **68.0%** | 16.2% | 11.0% | 19.1% | 29.4% | 17.81 | 0.74 | −12.491 | −9.473 |
-| `calibrated` | `qwen3-8b_log_score_full` | 55.0% | 21.8% | 12.0% | 30.9% | 38.2% | **7.91** | 1.15 | −10.150 | −7.047 |
-| `neutral` | `qwen3-8b-base` | 53.0% | 15.1% | 8.0% | **37.7%** | **45.3%** | **8.44** | 1.46 | **−9.533** | **−6.463** |
-| `neutral` | `qwen3-8b_binary_full` | 57.0% | 22.8% | 13.0% | 22.8% | 33.3% | 126.46 | 0.94 | −11.144 | −7.650 |
-| `neutral` | `qwen3-8b_log_score_full` | **62.0%** | **25.8%** | **16.0%** | 30.6% | 38.7% | 15.04 | 1.05 | −10.080 | −7.387 |
+| `calibrated` | `qwen3-8b-base` | 56.0% | **33.9%** | **19.0%** | 33.9% | **44.6%** | 14.76 | 1.41 | **−9.286** | **−6.518** |
+| `calibrated` | `qwen3-8b_binary_full` (R1) | **68.0%** | 16.2% | 11.0% | 19.1% | 29.4% | 17.81 | 0.74 | −12.491 | −9.473 |
+| `calibrated` | `qwen3-8b_log_score_full` (R1) | 55.0% | 21.8% | 12.0% | 30.9% | 38.2% | **7.91** | 1.15 | −10.150 | −7.047 |
+| `calibrated` | `qwen3-8b_binary_full_r2` (R2) | 67.0% | 19.4% | 13.0% | 32.8% | 41.8% | 22.69 | 0.73 | −10.731 | −8.445 |
+| `calibrated` | **`qwen3-8b_log_score_full_r2` (R2)** | 53.0% | 22.6% | 12.0% | **39.6%** | 43.4% | 18.95 | 0.66 | −10.065 | −6.896 |
+| `neutral` | `qwen3-8b-base` | 53.0% | 15.1% | 8.0% | **37.7%** | **45.3%** | 8.44 | 1.46 | −9.533 | −6.463 |
+| `neutral` | `qwen3-8b_binary_full` (R1) | 57.0% | 22.8% | 13.0% | 22.8% | 33.3% | 126.46 | 0.94 | −11.144 | −7.650 |
+| `neutral` | `qwen3-8b_log_score_full` (R1) | **62.0%** | 25.8% | **16.0%** | 30.6% | 38.7% | 15.04 | 1.05 | −10.080 | −7.387 |
+| `neutral` | `qwen3-8b_binary_full_r2` (R2) | 55.0% | **27.3%** | 15.0% | 32.7% | 41.8% | 15.16 | 0.62 | −10.422 | −7.530 |
+| `neutral` | **`qwen3-8b_log_score_full_r2` (R2)** | 61.0% | 24.6% | 15.0% | 24.6% | 41.0% | **4.98** | 0.53 | **−7.878** | **−5.801** |
 
-### 4. Paired Valid-on-All-3 Subset (Zero Selection-Bias / Fallback Confounding)
+### 4. Head-to-Head Paired Valid Subsets (Zero Selection-Bias / Fallback Confounding)
 
-| Split | Model | `n` | Pt Acc | 68% Cov | 95% Cov | Pull Width | Sharpness | Mean Reward |
+| Paired Subset (`calibrated`) | Model | `n` | Pt Acc | 68% Cov | 95% Cov | Pull Width | Sharpness | Mean Reward |
 | :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| All (`calibrated`) | `qwen3-8b-base` | 81 | **49.4%** | **44.4%** | **63.0%** | **2.16** | 1.00 | **−4.225** |
-| All (`calibrated`) | `qwen3-8b_binary_full` | 81 | 39.5% | 40.7% | 54.3% | 2.99 | 1.00 | −6.273 |
-| All (`calibrated`) | `qwen3-8b_log_score_full` | 81 | 44.4% | 43.2% | 55.6% | 2.69 | 1.00 | −5.074 |
-| OOD (`calibrated`) | `qwen3-8b-base` | 29 | **44.8%** | **44.8%** | **62.1%** | **2.73** | 1.63 | **−6.150** |
-| OOD (`calibrated`) | `qwen3-8b_binary_full` | 29 | 20.7% | 27.6% | 41.4% | 6.45 | 1.01 | −10.408 |
-| OOD (`calibrated`) | `qwen3-8b_log_score_full` | 29 | 31.0% | 34.5% | 44.8% | 6.53 | 1.21 | −8.029 |
+| **Head-to-Head R2 (All)** | `binary_r2` | 152 | 52.6% | 54.6% | 69.1% | 2.03 | 1.00 | −4.068 |
+| | **`log_score_r2`** | **152** | **55.3%** | **56.6%** | **75.0%** | **1.55** | **1.00** | **−2.701** |
+| **Head-to-Head R2 (ID)** | `binary_r2` | 118 | 63.6% | **63.6%** | 80.5% | 1.15 | 1.00 | −1.710 |
+| | **`log_score_r2`** | **118** | **64.4%** | 62.7% | **84.7%** | **1.15** | **1.00** | **−0.536** |
+| **Head-to-Head R2 (OOD)** | `binary_r2` | 34 | 14.7% | 23.5% | 29.4% | 36.59 | 0.48 | −12.251 |
+| | **`log_score_r2`** | **34** | **23.5%** | **35.3%** | **41.2%** | **14.61** | **0.64** | **−10.215** |
+| **Paired Base + R2 (OOD)** | `base` | 19 | **21.1%** | 15.8% | 21.1% | 139.47 | 0.46 | −13.623 |
+| | `binary_r2` | 19 | 15.8% | **31.6%** | **36.8%** | 103.78 | 0.44 | −10.578 |
+| | **`log_score_r2`** | **19** | **21.1%** | **31.6%** | **36.8%** | **11.26** | **0.63** | **−9.399** |
 
-![OOD Calibration Comparison (Round 1)](assets/ood_calibration_calibrated.png)
+![OOD Calibration Comparison (All Models)](assets/ood_calibration_calibrated.png)
 
 ---
 
-## Mandatory Audits & Honest Takeaways
+## Mandatory Audits & Code-Level Verification (`docs/ROADMAP.md` §4)
 
-### 1. Binary RLVR Severe Overconfidence Collapse Confirmed
-Across both `calibrated` and `neutral` prompts, optimizing binary point-accuracy rewards (`binary`) reliably increased code execution validity (`57.3% → 71.4%` overall), **while severely harming epistemic calibration**:
-- On **ID Tier-3 systematics**, `binary` shrank median sharpness (`0.50 → 0.37`), worsened pull width (`2.89 → 3.98`), and dropped valid-only reward by `−3.01` (`−3.803 → −6.813`).
-- On **OOD (`calibrated`)**, `binary` shrank median sharpness nearly 2× (`1.41 → 0.74`), collapsed `cov68` by **−14.8 points** (`33.9% → 19.1%`), and dropped valid-only reward from `−9.286 → −12.491`.
-- On **OOD (`neutral`)**, the exact same collapse replicated (`cov68`: `37.7% → 22.8%`, pull width `8.44 → 126.46`).
+### 1. Lazy Global Width-Inflation Audit: Cleanly Passed Even at `KL = 0.076`
+Under `log_score_reward`, 10× overconfident intervals cost `~ −12` while 10× conservative intervals cost only `~ −1.8`, making lazy global error-bar inflation a serious reward-hacking risk. **Round 2 proves `log_score_r2` did NOT cheat:**
+- **Tier-1 Clean sharpness is exact `1.00`:** `line_fit = 1.00`, `weighted_mean = 1.00`, `counting_rate = 1.03`.
+- **Contrast with `binary_r2` on `counting_rate-dev-00003`:** `binary_r2` divided `mean_count_rate = np.mean(counts) / 10` by `10 s` but **forgot to divide `std_dev` by `10`**, yielding **`10×` too-wide intervals** (`sharpness = 10.04`, `pull_width = 0.08`, `rew = −1.511`) while still collecting full `+1.0` binary reward! `log_score_r2` fixed the exact factor (`np.sqrt(np.var(counts) / (len(counts) * 10**2))`, `sharpness = 1.03`, `rew = −0.212`).
 
-### 2. Lazy Global Width-Inflation Audit: Passed (No Constant Multiplier Hack)
-- On Tier-1 clean families, `log_score` preserved exact median sharpness **`1.00`** on both `line_fit` (`1.00`) and `weighted_mean` (`1.00`), ruling out lazy global error-bar inflation.
-- On `counting_rate`, both `binary` (`sharpness=8.69`) and `log_score` (`sharpness=19.97`) shifted away from a buggy Gamma-prior script in `base` (which predicted `4.26e6` instead of `26.2`) to an identical simpler Poisson script (`std_dev = np.sqrt(mean_rate)` missing `/ sqrt(total_time)`). Because *both* arms independently adopted this simpler non-crashing template, it reflects crash avoidance rather than log-score width hacking.
+### 2. Code-Level Evidence of Procedural Uncertainty Propagation (Not Scalar Rescaling)
+Inspecting side-by-side generated scripts reveals concrete algorithmic differences induced by proper scoring rules:
+- **Unseen OOD `dead_time` (`0.0% → 33.3%` cov68):** Both `base` and `binary_r2` stayed at `0.0%` cov68 (`rew_v = −20.00 / −17.74`), hallucinating broken formulas (`avg_recorded / (10 - (dead_time_mean * n_runs)/10)` and `dead_time_sigma / 10` added directly to Hz rates). On `dead_time-dev-00017`, **`log_score_r2` derived an iterative fixed-point dead-time correction in comments and explicitly combined relative statistical and relative dead-time uncertainties in quadrature** (`np.sqrt(relative_uncertainty_recorded**2 + relative_uncertainty_dead_time**2)`), producing `[2977, 3349, 3721, 4093, 4465]` against truth `3458 ± 174` (`cov68 = 1`, `rew = −0.51` vs. `−20.00` for both `base` and `binary_r2`).
+- **ID Tier-3 `voltmeter_gain` (`−2.283` vs. `binary_r2` `−9.031`):** At identical `53.3%` point accuracy and `100%` validity, `binary_r2` wrote `total_uncertainty *= np.sqrt(1 + (gain_uncertainty / gain)**2)` (multiplying a tiny `0.002 V` statistical SE by `1.0000045` instead of adding `V × σ_gain = 0.04 V` in quadrature), collapsing sharpness to `0.30` and pull width to `7.13`. `log_score_r2` explicitly combined zero/reading/certificate terms in quadrature (`rew = −2.283`), though it still occasionally confuses sample SD with SE and has room to improve further.
+- **ID Tier-3 `underestimated_errors` (`−0.389` vs. `binary_r2` `−2.151`):** On `underestimated_errors-dev-00002`, `binary_r2` invented a broken regression-SE formula giving `σ = 4.65 × 10⁶` (`sharpness = 3.83 × 10⁶`, `rew = −14.66`) while still earning full `+1.0` binary reward because `q50 = 167.76` matched truth `167.7`. `log_score_r2` produced clean covariance sampling (`sharpness = 1.01`, `rew = +0.50`).
 
-### 3. Why OOD Did Not Yet Surpass Base in Round 1 (Diagnosis for Round 2)
-Code-level inspection and training telemetry revealed two concrete bottlenecks in Round 1:
-1. **Tiny policy shift (`KL ≈ 0.011`):** With `lr=1e-5`, `beta=0.04`, and `max_grad_norm=0.2` over 150 steps, `KL` plateaued at `0.011` (`log_score`) / `0.012` (`binary`) and `log_score` batch valid rate rose only modestly (`66.6% → 72.2%`). On several seeds (e.g., `underestimated_errors-dev-00000`), all three models generated character-for-character identical scripts.
-2. **Physics-formula & implementation bugs under single-turn `enable_thinking=False`:** On unseen `dead_time`, all three models wrote wrong dead-time formulas (`true_rate * 10 * (1 - dead_time/10)` instead of $R_{\text{obs}} = R_{\text{true}} / (1 + R_{\text{true}}\tau)$), yielding `0.0%` coverage on `calibrated`. On `correlated_norm-dev-00000`, `log_score` actually attempted a daily log-normal Monte Carlo calibration loop (`np.random.lognormal(0, 0.005)`) rather than `base`/`binary`'s buggy `density * avg_density` (`850,000`), but hit a 1D broadcast shape bug and crashed.
+### 3. Continuous Proper Rewards Avoid Binary RLVR Gradient Starvation
+During Round 2 training, once code validity reached `~98%`, **`binary_r2`'s `frac_reward_zero_std` climbed to `0.50` average (`0.80` at step 150)** because all 8 rollouts either hit or missed `|q50 − θ| ≤ σ_ref` identically. By contrast, **`log_score_r2` maintained `frac_reward_zero_std = 0.013` (`0.05` at step 150)**, providing continuous gradient signal on uncertainty width and tail calibration throughout training.
 
-### Next Step: Round 2 Stronger Policy Shift (`lr=5e-5`, `beta=0.01`, `max_grad_norm=1.0`)
-To test whether pushing GRPO out of the near-frozen `KL ≈ 0.011` regime into genuine policy adaptation (`KL ≈ 0.05–0.15`) unlocks true OOD systematic generalization—or triggers lazy Tier-1 width inflation in 8B QLoRA—Round 2 runs both arms with `lr=5e-5, beta=0.01, max_grad_norm=1.0` over 150 steps on the RTX 4090.
+### 4. Honest Remaining Limitations
+- **OOD single-turn code validity remains hard (`53%` for `log_score_r2` vs. `67%` for `binary_r2` on `calibrated` OOD):** While `log_score_r2` outperformed `binary_r2` by **+11.8 pts cov68 / +11.8 pts cov95 / +2.04 reward** on the paired valid OOD subset (`n=34`), achieved the **best OOD `calibrated` cov68 (`39.6%`)** and **best OOD `neutral` pull width (`4.98`) & reward (`−5.801`)** of all 5 models, its OOD validity dropped on `errors_xy` (`32%`) and `no_signal` (`40%`), where single-turn `enable_thinking=False` scripts still suffer runtime/API errors on unseen schemas.
+- **Next high-leverage steps:** (1) Multi-turn interactive `pullgym run-fast` evaluation of commercial frontier models (`Claude Sonnet`, `DeepSeek`, `Gemini`, `GPT`) on `neutral` vs. `calibrated`, and (2) extending `log_score` GRPO to **multi-turn execution-feedback rollouts** so the agent can debug syntax/shape errors on unseen OOD schemas.

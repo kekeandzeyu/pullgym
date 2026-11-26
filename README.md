@@ -8,7 +8,7 @@ The question it answers:
 
 > When an agent reports a 68% interval on a measured quantity, how often does the true value fall inside it? A calibrated analyst is right 68% of the time.
 
-> **Status: pre-release (v0.1 in progress).** Twelve experiment families across four tiers, the scorer, the Harbor exporter, the fast runner and the reporting tool work, and every family's reference analysis is verified calibrated. Round 1 `Qwen3-8B` GRPO results (`log_score` vs. `binary`, 960 evaluated episodes across `calibrated` and `neutral`) are recorded in [docs/RLVR_RESULTS.md](docs/RLVR_RESULTS.md); stronger-KL Round 2 RL and commercial frontier baselines are in progress. Interfaces may change before v0.1.
+> **Status: pre-release (v0.1 in progress).** Twelve experiment families across four tiers, the scorer, the Harbor exporter, the fast runner and the reporting tool work, and every family's reference analysis is verified calibrated. Controlled `Qwen3-8B` GRPO results (`log_score` vs. `binary` across two KL regimes, 1,600 evaluated episodes on `calibrated` and `neutral`) are published in [docs/RLVR_RESULTS.md](docs/RLVR_RESULTS.md); commercial frontier baselines are next. Interfaces may change before v0.1.
 
 ## Why
 
@@ -183,24 +183,34 @@ How the question is asked changes the answers, so results are always reported pe
 
 ## Results & Roadmap
 
-Round 1 controlled GRPO results on `Qwen3-8B` (4-bit QLoRA, 150 steps, `lr=1e-5, beta=0.04`, `enable_thinking=False`; full audit in [docs/RLVR_RESULTS.md](docs/RLVR_RESULTS.md)):
+Controlled GRPO results on `Qwen3-8B` (4-bit QLoRA, 150 steps, `enable_thinking=False`; Round 2 effective RLVR regime `lr=5e-5, beta=0.01`, plus Round 1 conservative-KL ablation in [docs/RLVR_RESULTS.md](docs/RLVR_RESULTS.md)):
 
 | Split (`variant`) | Model | `n` | Valid | Pt Acc (valid) | 68% Cov *(68%)* | 95% Cov *(95%)* | Pull Width *(1.0)* | Sharpness *(1.0)* | Reward (valid) | Reward (all) |
 | :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| **All 12 families** (`calibrated`) | `qwen3-8b-base` | 220 | 57.3% | 40.5% | 38.1% | 54.0% | 3.33 | 1.00 | −6.721 | −5.449 |
+| | `qwen3-8b_binary_full_r2` | 220 | **84.1%** | 47.6% | 52.4% | 66.5% | 2.32 | 1.00 | −4.977 | −4.786 |
+| | **`qwen3-8b_log_score_full_r2`** | 220 | 78.6% | **51.4%** | **56.1%** | **72.3%** | **1.67** | **1.00** | **−3.450** | **−3.423** |
 | **ID — 8 train families** (`calibrated`) | `qwen3-8b-base` | 120 | 58.3% | 45.7% | 41.4% | 61.4% | 2.07 | 1.00 | −4.669 | −4.558 |
-| | `qwen3-8b_binary_full` | 120 | **74.2%** | 47.2% | 47.2% | 59.6% | 2.87 | 1.00 | −5.395 | −5.160 |
-| | `qwen3-8b_log_score_full` | 120 | 67.5% | **55.6%** | **49.4%** | **63.0%** | **2.22** | 1.00 | **−4.382** | **−4.304** |
-| **OOD — 4 unseen families** (`calibrated`) | `qwen3-8b-base` | 100 | 56.0% | **33.9%** | **33.9%** | **44.6%** | 14.76 | 1.41 | **−9.286** | **−6.518** |
-| | `qwen3-8b_binary_full` | 100 | **68.0%** | 16.2% | 19.1% | 29.4% | 17.81 | 0.74 | −12.491 | −9.473 |
-| | `qwen3-8b_log_score_full` | 100 | 55.0% | 21.8% | 30.9% | 38.2% | **7.91** | 1.15 | −10.150 | −7.047 |
-| **OOD — 4 unseen families** (`neutral`) | `qwen3-8b-base` | 100 | 53.0% | 15.1% | **37.7%** | **45.3%** | **8.44** | 1.46 | **−9.533** | **−6.463** |
-| | `qwen3-8b_binary_full` | 100 | 57.0% | 22.8% | 22.8% | 33.3% | 126.46 | 0.94 | −11.144 | −7.650 |
-| | `qwen3-8b_log_score_full` | 100 | **62.0%** | **25.8%** | 30.6% | 38.7% | 15.04 | 1.05 | −10.080 | −7.387 |
+| | `qwen3-8b_binary_full_r2` | 120 | 98.3% | 63.6% | **63.6%** | 80.5% | 1.15 | 1.00 | −1.710 | −1.738 |
+| | **`qwen3-8b_log_score_full_r2`** | 120 | **100.0%** | **64.2%** | 63.3% | **85.0%** | **1.14** | **1.00** | **−0.528** | **−0.528** |
+| **ID Tier-3 Systematics** (`voltmeter_gain`, `underestimated_errors`) | `qwen3-8b-base` | 30 | 70.0% | 52.4% | 28.6% | 52.4% | 2.89 | 0.50 | −3.803 | −4.249 |
+| | `qwen3-8b_binary_full_r2` | 30 | **100.0%** | 56.7% | 40.0% | 46.7% | 3.50 | 0.45 | −5.591 | −5.591 |
+| | **`qwen3-8b_log_score_full_r2`** | 30 | **100.0%** | **60.0%** | **43.3%** | **63.3%** | **2.09** | **0.56** | **−1.336** | **−1.336** |
+| **OOD — 4 unseen families** (`calibrated`) | `qwen3-8b-base` | 100 | 56.0% | **33.9%** | 33.9% | **44.6%** | **14.76** | 1.41 | **−9.286** | **−6.518** |
+| | `qwen3-8b_binary_full_r2` | 100 | **67.0%** | 19.4% | 32.8% | 41.8% | 22.69 | 0.73 | −10.731 | −8.445 |
+| | **`qwen3-8b_log_score_full_r2`** | 100 | 53.0% | 22.6% | **39.6%** | 43.4% | 18.95 | 0.66 | −10.065 | −6.896 |
+| **OOD — Head-to-Head Paired Valid** (`calibrated`) | `qwen3-8b_binary_full_r2` | 34 | 100.0% | 14.7% | 23.5% | 29.4% | 36.59 | 0.48 | −12.251 | −12.251 |
+| | **`qwen3-8b_log_score_full_r2`** | 34 | 100.0% | **23.5%** | **35.3%** | **41.2%** | **14.61** | **0.64** | **−10.215** | **−10.215** |
+| **OOD — 4 unseen families** (`neutral`) | `qwen3-8b-base` | 100 | 53.0% | 15.1% | **37.7%** | **45.3%** | 8.44 | 1.46 | −9.533 | −6.463 |
+| | `qwen3-8b_binary_full_r2` | 100 | 55.0% | **27.3%** | 32.7% | 41.8% | 15.16 | 0.62 | −10.422 | −7.530 |
+| | **`qwen3-8b_log_score_full_r2`** | 100 | **61.0%** | 24.6% | 24.6% | 41.0% | **4.98** | 0.53 | **−7.878** | **−5.801** |
 
-Key Round 1 findings (see [docs/RLVR_RESULTS.md](docs/RLVR_RESULTS.md) for Tier-1 sharpness checks, paired valid-only tables, and script diffs):
-- **Binary RLVR degrades calibration:** Despite raising code validity (`57% → 71%`), `binary` shrank OOD sharpness nearly 2× (`1.41 → 0.74`) and collapsed OOD 68%-coverage by ~15 points on both `calibrated` (`33.9% → 19.1%`) and `neutral` (`37.7% → 22.8%`), while worsening ID Tier-3 systematic reward (`−3.80 → −6.81`).
-- **Log-Score RLVR improves ID calibration without lazy Tier-1 width inflation:** On the 8 training families, `log_score` beat both `base` and `binary` on coverage (`49.4%`), point accuracy (`55.6%`), and reward (`−4.382` valid / `−4.304` all; ID Tier-3 systematics `−2.789` vs. `binary`'s `−6.813`) while keeping clean Tier-1 sharpness at `1.00` (`line_fit`, `weighted_mean`).
-- **Low-KL bottleneck on OOD:** At `lr=1e-5, beta=0.04`, policy shift stayed tiny (`KL ≈ 0.011`) and `log_score` did not yet surpass `base` on unseen OOD families (though it strongly outperformed `binary`). Round 2 (`lr=5e-5, beta=0.01`) is next to test stronger policy adaptation.
+![Distributional RLVR vs. Binary GRPO Comparison](docs/assets/rlvr_comparison.png)
+
+Key findings (full tables, Round 1 vs. Round 2 comparison, and side-by-side script diffs in [docs/RLVR_RESULTS.md](docs/RLVR_RESULTS.md)):
+- **Proper log-score RLVR closes the ID calibration gap without lazy Tier-1 width inflation:** `log_score_r2` hit **100% valid (120/120)** across all 8 training families with mean reward **`−0.528`** (vs. `−4.558` base and `−1.738` binary_r2), **exact `1.00` Tier-1 sharpness** (`line_fit=1.00`, `weighted_mean=1.00`, `counting_rate=1.03`), and **+4.26 reward** over `binary_r2` on ID Tier-3 systematics (`−1.336` vs. `−5.591`, including `+6.75` on `voltmeter_gain`).
+- **Binary RLVR stays blind to error-bar bugs and suffers gradient starvation:** Even when `binary_r2` reaches `98–100%` valid and strong point accuracy, it leaves `10×` unit errors in `counting_rate` error bars (`sharpness=10.04`), ignores `voltmeter_gain` calibration uncertainty (`sharpness=0.30`, `reward=−9.03`), and hits `frac_reward_zero_std = 0.80` (vs. `0.013` mean for `log_score_r2`).
+- **OOD systematic transfer & remaining single-turn bottleneck:** On unseen OOD families, `log_score_r2` beats `binary_r2` by **+11.8 pts cov68 / +11.8 pts cov95 / +2.04 reward** on the paired valid subset (`n=34`), jumps `dead_time` from **`0.0% → 33.3%` cov68** (deriving an iterative dead-time correction + quadrature uncertainty propagation in code), and achieves the best `neutral` OOD pull width (`4.98`) and reward (`−5.801`) of all five models—though single-turn `enable_thinking=False` validity remains limited on unseen schemas (`errors_xy`, `no_signal`).
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) and [docs/RESUME_TRAINING.md](docs/RESUME_TRAINING.md) for the full technical audit, reward-hacking warnings, and execution plan:
 
