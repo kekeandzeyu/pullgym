@@ -1,20 +1,17 @@
 # pullgym — Technical Audit, Bottlenecks & ML/RL Roadmap
 
-## 1. Technical Audit: Idea Novelty vs. Technical/ML Novelty
+## 1. Current Status Snapshot (~92% Complete for `v0.1`)
 
-### What Already Works Well (~80% Complete)
-* **Gap Filled:** Existing benchmarks test task-level confidence, zero-data priors (`OpenEstimate`), static stats QA (`StatABench`), or law/code reproduction (`PhysGym`, `Collider-Bench`). None score **empirical interval coverage (68% / 95%) and pull calibration** of tool-using data-analysis agents under realistic systematic uncertainties—computed purely from known ground truth $\theta$ with **zero LLM-as-a-judge**.
-* **Rigorous Verification & Scoring (`src/pullgym/scoring.py`):**
-  * Five-quantile reporting (`q025, q16, q50, q84, q975`) interpolated piecewise-linearly in Gaussian $z$-space (`log_density`, `src/pullgym/scoring.py#L53-L63`).
-  * Strictly proper clipped log-density reward (`log_score_reward`) that averages `~0` for the calibrated human reference analysis and penalizes overconfident error bars quadratically (`~ -pull²/2`, down to `-20`).
-  * All 12 families across 4 tiers (`line_fit` through `dead_time`, `correlated_norm`, and `no_signal`) are verified calibrated on 2,000+ seeds and beat degenerate width/shift shortcuts (`pullgym calibrate`, `pullgym probe`).
-  * Contamination-resistant secret-seed held-out splits and isolated Harbor verification (`src/pullgym/export.py`).
+### Completed & Verified
+* **Core Benchmark & Calibrated Reference Suite (`src/pullgym/`):** 12 experiment families across 4 tiers (`line_fit` through `dead_time`, `correlated_norm`, `no_signal`), five-quantile proper `log_score_reward`, verified on 2,000+ seeds (`pullgym calibrate`, `pullgym probe`), plus secret-seed held-out Harbor export (`pullgym export`).
+* **Milestone 1 — Fast Zero-Docker Multi-Turn Runner (`pullgym run-fast`, Done):** Ephemeral read-only workspaces keeping `truth` and `ref_sigma` strictly in parent memory, stdlib OpenAI-compatible multi-turn `run_python` / `run_bash` loop with `--resume` and parallel concurrency (`src/pullgym/runner.py`, exact Harbor parity verified in `tests/test_runner.py`).
+* **Milestone 2 — Controlled Distributional RLVR vs. Binary GRPO (`Qwen3-8B`, Done):** Two controlled 2-arm GRPO rounds (1,600 evaluated episodes across `calibrated` and `neutral`, documented in [docs/RLVR_RESULTS.md](RLVR_RESULTS.md)):
+  * **ID Calibration Without Width Inflation:** `log_score_r2` (`lr=5e-5, beta=0.01`, 150 steps) reached **100% valid (`120/120`)** on the 8 training families with **`−0.528` mean reward** (vs. `−4.558` base, `−1.738` `binary_r2`) and **exact `1.00` Tier-1 sharpness** (`line_fit=1.00`, `weighted_mean=1.00`, `counting_rate=1.03`).
+  * **Binary RLVR Blindness & Gradient Starvation:** `binary_r2` hit `80%` zero-std batch starvation by step 150 (vs. `5%` for `log_score_r2`) and left `10×` unit bugs (`counting_rate` sharpness `10.04`) and ignored systematics (`voltmeter_gain` `−9.03` vs. `log_score_r2` `−2.28`).
+  * **Partial OOD Transfer & Single-Turn Bottleneck:** `log_score_r2` beat `binary_r2` by `+11.8` pts coverage / `+2.04` reward on paired valid OOD (`n=34`) and lifted `dead_time` cov68 from `0.0% → 33.3%`, while single-turn `enable_thinking=False` schema errors (`53%` OOD valid) remain the main bottleneck for `v0.2` multi-turn RLVR.
 
-### Current Technical Limitations & Bottlenecks
-1. **Classical Internals Only (No Model Results or ML/RL Loop Yet):**
-   Right now `families/*.py` and `scoring.py` combine clean `numpy`/`scipy` synthetic generators with classical proper scoring rules (Gneiting & Raftery, 2007). Without frontier model baselines and a training experiment, the repository reads as a well-crafted static test suite rather than a new AI/RL result.
-2. **Per-Episode Dual-Container Overhead (`src/pullgym/export.py#L146-L185`):**
-   `export_task()` generates **two Dockerfiles per episode** (`environment/Dockerfile` + `tests/Dockerfile`). Running `12 families × 50 seeds × 5 models = 3,000 episodes` via per-episode container builds on a laptop or Colab instance introduces heavy I/O and startup overhead when episodes only need an isolated Python worker.
+### Remaining Before Tagging `v0.1`
+1. **Commercial & Open Frontier Calibration Table (`pullgym run-fast`, ~\$8–\$15):** Run 3–5 multi-turn frontier models (`DeepSeek`, `Claude Sonnet`, `Gemini`, `GPT`) across `calibrated` and `neutral` (`12 families × 25 seeds = 300 episodes/variant`) to publish the headline frontier leaderboard alongside the RLVR results.
 
 ---
 
@@ -42,13 +39,13 @@ Almost all current Reinforcement Learning with Verifiable Rewards (RLVR) on math
 
 ## 3. Low-Cost Evaluation & Compute Plan (~$8–$18 Total API Spend)
 
-| Step | Scope (e.g. 12 families × 25 seeds = 300 eps/model; `neutral` vs. `calibrated` prompt ablation) | Compute / API Strategy | Est. Spend |
-| :--- | :--- | :--- | :--- |
-| **1. `pullgym run-fast`** | Build lightweight isolated subprocess runner; verify exact parity with Harbor oracle on dev seeds. | Local MacBook | **$0** |
-| **2. Open-Weight Baselines** | Evaluate `Qwen3-8B` & `Qwen3-32B-AWQ` (or `DeepSeek-R1-Distill`) served locally on Colab `vLLM`. | Colab Pro L4/A100 | **$0** |
-| **3. Commercial Frontier Table** | Evaluate `deepseek-flash` & `deepseek-v4-pro` (off-peak 50% discount, cached prefixes) + 1 non-DeepSeek closed baseline (e.g. Claude Haiku / GPT-mini, plus optional 120-episode subset on Sonnet). | Commercial APIs | **~$8–$18** |
-| **4. Binary vs. Log-Score GRPO** | Train Qwen3-4B on 8 families (`run-fast` rollouts) under both rewards; report OOD pull width, 68%/95% coverage, and sharpness on the 4 held-out families. | Colab Pro L4/A100 | **$0** |
-| **5. v0.1 Release & Writeup** | Publish model leaderboard, `neutral` vs. `calibrated` prompt sensitivity, shortcut-trap breakdown, and the Binary-vs-Proper RLVR calibration curves. | Local | **$0** |
+| Step | Status | Scope (`12 families × 25 seeds = 300 eps/variant`; `calibrated` + `neutral`) | Compute / API Strategy | Est. Spend |
+| :--- | :--- | :--- | :--- | :--- |
+| **1. `pullgym run-fast`** | **Done** | Lightweight isolated subprocess runner with exact Harbor parity & `--resume`. | Local MacBook | **$0** |
+| **2. `Qwen3-8B` Base + Binary vs. Log-Score GRPO** | **Done** | Round 1 (`KL=0.011`) + Round 2 (`KL=0.076`, 150 steps) on 8 families; 1,600 episodes evaluated across ID & OOD (`docs/RLVR_RESULTS.md`). | RTX 4090 48 GB | **Done** |
+| **3. Commercial Frontier Leaderboard** | **Next** | Run `deepseek-chat` / `deepseek-reasoner`, `claude-sonnet`, `gemini-flash/pro`, and `gpt` via `pullgym run-fast` (`--concurrency 6 --resume`). | DeepSeek API + OpenRouter / AI Studio | **~$8–$15** |
+| **4. `v0.1` Release & Flagship Post** | **Next** | Merge frontier leaderboard into `README.md`, tag `v0.1` on GitHub/PyPI, and publish technical post. | Local | **$0** |
+| **5. `v0.2` Multi-Turn RLVR & New Trap Families** | Planned | Multi-turn execution-feedback GRPO (fixing OOD schema validity) + `outliers`, `look_elsewhere`, and unit-mismatch families. | GPU VM / Colab | TBD |
 
 ---
 

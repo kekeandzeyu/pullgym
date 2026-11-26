@@ -144,6 +144,7 @@ def test_openai_agent_tools_loop_and_report(tmp_path):
                         "message": {
                             "role": "assistant",
                             "content": "",
+                            "reasoning_content": "Inspecting data directory first.",
                             "tool_calls": [
                                 {
                                     "id": "tc_1",
@@ -181,6 +182,7 @@ def test_openai_agent_tools_loop_and_report(tmp_path):
                         "message": {
                             "role": "assistant",
                             "content": "",
+                            "reasoning_content": "Inspecting data directory first.",
                             "tool_calls": [
                                 {
                                     "id": "tc_2",
@@ -217,6 +219,9 @@ def test_openai_agent_tools_loop_and_report(tmp_path):
     assert oc.error is None
     assert oc.rewards["valid"] == 1.0
     assert abs(oc.rewards["sharpness"] - 1.0) < 0.05
+    # Verify reasoning_content is echoed back in multi-turn tool-call history (required by deepseek-reasoner).
+    turn2_asst = [m for m in calls[1]["messages"] if m["role"] == "assistant"][0]
+    assert turn2_asst.get("reasoning_content") == "Inspecting data directory first."
 
     result_doc = json.loads((oc.trial_dir / "result.json").read_text())
     assert result_doc["usage"] == {"turns": 3, "prompt_tokens": 550, "completion_tokens": 105}

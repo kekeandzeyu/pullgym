@@ -311,7 +311,10 @@ def openai_http_chat(
 
     def _call(payload: dict[str, Any]) -> dict[str, Any]:
         body = json.dumps(payload).encode("utf-8")
-        headers = {"Content-Type": "application/json"}
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "pullgym/0.1",
+        }
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
         last_err: Exception | None = None
@@ -440,9 +443,11 @@ class OpenAICompatibleAgent:
             tool_calls = msg.get("tool_calls") or []
             if tool_calls:
                 assistant_msg["tool_calls"] = tool_calls
+                if msg.get("reasoning_content") is not None:
+                    assistant_msg["reasoning_content"] = msg["reasoning_content"]
             messages.append(assistant_msg)
             transcript_msg = dict(assistant_msg)
-            if msg.get("reasoning_content"):
+            if msg.get("reasoning_content") is not None:
                 transcript_msg["reasoning_content"] = msg["reasoning_content"]
             result.transcript.append(transcript_msg)
 

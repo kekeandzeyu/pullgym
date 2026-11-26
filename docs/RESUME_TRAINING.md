@@ -1,6 +1,8 @@
-# pullgym — Training Resume & Handoff Guide
+# pullgym — Training Reproducibility & Handoff Guide
 
-Use this file to resume the **Proper-Scoring-Rule RLVR (`log_score`) vs. Binary GRPO (`binary`)** experiment from our exact stopping point with zero wasted setup.
+> **Completed Status:** Both Round 1 (`lr=1e-5, beta=0.04, steps=150`) and Round 2 (`lr=5e-5, beta=0.01, max_grad_norm=1.0, steps=150`) `Qwen3-8B` GRPO experiments (`log_score` vs. `binary`, 1,600 evaluated episodes) are **complete and audited** in [docs/RLVR_RESULTS.md](RLVR_RESULTS.md). Keep this guide for reproducing or extending those runs (for Round 2 effective adaptation, pass `--steps 150 --lr 5e-5 --beta 0.01 --num-generations 8 --grad-accum 4`).
+
+Use this file to reproduce or extend the **Proper-Scoring-Rule RLVR (`log_score`) vs. Binary GRPO (`binary`)** experiment with zero wasted setup.
 
 > **Fastest way to resume in a new chat:** tell the agent:
 > *"Read `docs/RESUME_TRAINING.md` and run Option A on Colab A100."*

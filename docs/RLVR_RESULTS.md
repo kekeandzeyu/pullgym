@@ -82,19 +82,21 @@ Per-family highlights at `100%` valid for **`log_score_r2`**:
 
 ### 4. Head-to-Head Paired Valid Subsets (Zero Selection-Bias / Fallback Confounding)
 
-| Paired Subset (`calibrated`) | Model | `n` | Pt Acc | 68% Cov | 95% Cov | Pull Width | Sharpness | Mean Reward |
+| Paired Subset (`calibrated`) | Model | `n` | Pt Acc | 68% Cov *(±1σ SE)* | 95% Cov *(±1σ SE)* | Pull Width | Sharpness | Mean Reward |
 | :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| **Head-to-Head R2 (All)** | `binary_r2` | 152 | 52.6% | 54.6% | 69.1% | 2.03 | 1.00 | −4.068 |
-| | **`log_score_r2`** | **152** | **55.3%** | **56.6%** | **75.0%** | **1.55** | **1.00** | **−2.701** |
-| **Head-to-Head R2 (ID)** | `binary_r2` | 118 | 63.6% | **63.6%** | 80.5% | 1.15 | 1.00 | −1.710 |
-| | **`log_score_r2`** | **118** | **64.4%** | 62.7% | **84.7%** | **1.15** | **1.00** | **−0.536** |
-| **Head-to-Head R2 (OOD)** | `binary_r2` | 34 | 14.7% | 23.5% | 29.4% | 36.59 | 0.48 | −12.251 |
-| | **`log_score_r2`** | **34** | **23.5%** | **35.3%** | **41.2%** | **14.61** | **0.64** | **−10.215** |
-| **Paired Base + R2 (OOD)** | `base` | 19 | **21.1%** | 15.8% | 21.1% | 139.47 | 0.46 | −13.623 |
-| | `binary_r2` | 19 | 15.8% | **31.6%** | **36.8%** | 103.78 | 0.44 | −10.578 |
-| | **`log_score_r2`** | **19** | **21.1%** | **31.6%** | **36.8%** | **11.26** | **0.63** | **−9.399** |
+| **Head-to-Head R2 (All)** | `binary_r2` | 152 | 52.6% | 54.6% ± 4.0% | 69.1% ± 3.7% | 2.03 | 1.00 | −4.068 |
+| | **`log_score_r2`** | **152** | **55.3%** | **56.6% ± 4.0%** | **75.0% ± 3.5%** | **1.55** | **1.00** | **−2.701** |
+| **Head-to-Head R2 (ID)** | `binary_r2` | 118 | 63.6% | **63.6% ± 4.4%** | 80.5% ± 3.6% | 1.15 | 1.00 | −1.710 |
+| | **`log_score_r2`** | **118** | **64.4%** | 62.7% ± 4.5% | **84.7% ± 3.3%** | **1.15** | **1.00** | **−0.536** |
+| **Head-to-Head R2 (OOD)** | `binary_r2` | 34 | 14.7% | 23.5% ± 7.3% | 29.4% ± 7.8% | 36.59 | 0.48 | −12.251 |
+| | **`log_score_r2`** | **34** | **23.5%** | **35.3% ± 8.2%** | **41.2% ± 8.4%** | **14.61** | **0.64** | **−10.215** |
+| **Paired Base + R2 (OOD)** | `base` | 19 | **21.1%** | 15.8% ± 8.4% | 21.1% ± 9.4% | 139.47 | 0.46 | −13.623 |
+| | `binary_r2` | 19 | 15.8% | **31.6% ± 10.7%** | **36.8% ± 11.1%** | 103.78 | 0.44 | −10.578 |
+| | **`log_score_r2`** | **19** | **21.1%** | **31.6% ± 10.7%** | **36.8% ± 11.1%** | **11.26** | **0.63** | **−9.399** |
 
 ![OOD Calibration Comparison (All Models)](assets/ood_calibration_calibrated.png)
+
+*Note on chart y-axes:* Panel B of `assets/rlvr_comparison.png` plots **valid-only** mean log-score reward (`rew_v`), whereas the right panel of `assets/ood_calibration_calibrated.png` plots **all-episode** mean log-score reward (`rew_all`, which includes the `prior − 1 ≈ −3` missing/invalid fallback from `scoring.py`).
 
 ---
 
@@ -115,5 +117,5 @@ Inspecting side-by-side generated scripts reveals concrete algorithmic differenc
 During Round 2 training, once code validity reached `~98%`, **`binary_r2`'s `frac_reward_zero_std` climbed to `0.50` average (`0.80` at step 150)** because all 8 rollouts either hit or missed `|q50 − θ| ≤ σ_ref` identically. By contrast, **`log_score_r2` maintained `frac_reward_zero_std = 0.013` (`0.05` at step 150)**, providing continuous gradient signal on uncertainty width and tail calibration throughout training.
 
 ### 4. Honest Remaining Limitations
-- **OOD single-turn code validity remains hard (`53%` for `log_score_r2` vs. `67%` for `binary_r2` on `calibrated` OOD):** While `log_score_r2` outperformed `binary_r2` by **+11.8 pts cov68 / +11.8 pts cov95 / +2.04 reward** on the paired valid OOD subset (`n=34`), achieved the **best OOD `calibrated` cov68 (`39.6%`)** and **best OOD `neutral` pull width (`4.98`) & reward (`−5.801`)** of all 5 models, its OOD validity dropped on `errors_xy` (`32%`) and `no_signal` (`40%`), where single-turn `enable_thinking=False` scripts still suffer runtime/API errors on unseen schemas.
-- **Next high-leverage steps:** (1) Multi-turn interactive `pullgym run-fast` evaluation of commercial frontier models (`Claude Sonnet`, `DeepSeek`, `Gemini`, `GPT`) on `neutral` vs. `calibrated`, and (2) extending `log_score` GRPO to **multi-turn execution-feedback rollouts** so the agent can debug syntax/shape errors on unseen OOD schemas.
+- **Unpaired `calibrated` OOD vs. `base` & single-turn schema fragility:** On `calibrated` OOD (`n=100`), `log_score_r2` raised `cov68` (`33.9% → 39.6%`) and beat `binary_r2` across every metric on the paired valid subset (`n=34`: `+11.8` pts cov68/cov95, `+2.04` reward) while winning outright on `neutral` OOD (`pull_width = 4.98`, `rew_all = −5.801`). However, unpaired `calibrated` OOD `valid%` (`56.0% → 53.0%`), valid point accuracy (`33.9% → 22.6%`), and `rew_v` (`−9.286 → −10.065`) dipped slightly vs. `base` because 150 single-turn non-thinking steps on 8 fixed families mildly overfit to seen CSV layouts, leaving execution fragility on unseen `errors_xy` (`32%` valid) and `no_signal` (`40%` valid). Notably, `binary_r2` regressed *more* heavily on unpaired `calibrated` OOD (`rew_v = −10.731`, `rew_all = −8.445`, `cov68 = 32.8%`).
+- **Next high-leverage steps:** (1) Multi-turn interactive `pullgym run-fast` evaluation of commercial frontier models (`Claude Sonnet`, `DeepSeek`, `Gemini`, `GPT`) on `neutral` vs. `calibrated`, and (2) extending `log_score` GRPO to **multi-turn execution-feedback rollouts** so the policy can inspect CSV headers and debug runtime errors on unseen OOD schemas.
