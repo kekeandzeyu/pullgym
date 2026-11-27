@@ -337,7 +337,7 @@ def openai_http_chat(
     base_url: str,
     api_key: str | None = None,
     timeout_sec: float = 180.0,
-    max_retries: int = 5,
+    max_retries: int = 8,
 ) -> ChatFn:
     """Create a stdlib-only HTTP client for OpenAI-compatible /chat/completions."""
     endpoint = base_url.rstrip("/") + "/chat/completions"
@@ -383,7 +383,8 @@ def openai_http_chat(
             ) as e:
                 last_err = AgentError(f"Request error calling {endpoint}: {e}")
                 if attempt < max_retries:
-                    time.sleep(min(2.0**attempt, 30.0))
+                    # Connection drops (often a proxy hop) can last minutes.
+                    time.sleep(min(2.0**attempt, 60.0))
                     continue
                 raise last_err from None
         raise last_err or AgentError(f"Failed calling {endpoint}")

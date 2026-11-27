@@ -84,23 +84,24 @@ MODELS: dict[str, dict] = {
                             temp=1.0, conc=4, cap=60.0, plan=[("t5-cal", 15)]),
     "kimi-k3.1-pro": dict(base=ARK, key="ARK_API_KEY", model="kimi-k3-1-pro-261024",
                           temp=1.0, conc=4, cap=100.0, plan=[("t5-cal", 12)]),
-    # OpenRouter (prepaid, USD). Cost is the exact usage.cost OpenRouter reports.
+    # OpenRouter (prepaid, USD). New accounts have a per-model requests-per-minute
+    # limit, so concurrency is 1-2. Cost is the exact usage.cost OpenRouter reports.
     # Pilot costs per Tier-5 episode: Haiku $0.002, Luna $0.007, Sonnet $0.04,
     # GPT-6.2 Sol $0.12, Gemini 4 Hydrogen $0.33 (dropped: too few episodes per $).
     "claude-haiku-5.5": dict(base=OPENROUTER, key="OPENROUTER_API_KEY", model="anthropic/claude-haiku-5.5",
-                             temp=1.0, conc=4, cap_usd=1.5, plan=REDUCED, cache=True,
+                             temp=1.0, conc=2, cap_usd=1.5, plan=REDUCED, cache=True,
                              extra={"usage": {"include": True}}),
     "gpt-6-luna": dict(base=OPENROUTER, key="OPENROUTER_API_KEY", model="openai/gpt-6-luna",
-                       temp=1.0, conc=4, cap_usd=2.5, plan=REDUCED,
+                       temp=1.0, conc=2, cap_usd=2.5, plan=REDUCED,
                        extra={"usage": {"include": True}}),
     "claude-sonnet-5.5": dict(base=OPENROUTER, key="OPENROUTER_API_KEY", model="anthropic/claude-sonnet-5.5",
-                              temp=1.0, conc=4, cap_usd=5.5, plan=[("t5-cal", 25), ("t5-neu", 25)], cache=True,
+                              temp=1.0, conc=1, cap_usd=5.5, plan=[("t5-cal", 25), ("t5-neu", 25)], cache=True,
                               extra={"usage": {"include": True}}),
     "gpt-6.2-sol": dict(base=OPENROUTER, key="OPENROUTER_API_KEY", model="openai/gpt-6.2-sol",
-                        temp=1.0, conc=4, cap_usd=4.5, plan=[("t5-cal", 25)],
+                        temp=1.0, conc=2, cap_usd=4.5, plan=[("t5-cal", 25)],
                         extra={"usage": {"include": True}}),
     "gemini-3.8-flash": dict(base=OPENROUTER, key="OPENROUTER_API_KEY", model="google/gemini-3.8-flash",
-                             temp=1.0, conc=4, cap_usd=2.5, plan=[("t5-cal", 25)],
+                             temp=1.0, conc=2, cap_usd=2.5, plan=[("t5-cal", 25)],
                              extra={"usage": {"include": True}}),
     "gemini-3.5-flash-lite": dict(base=GEMINI, key="GEMINI_API_KEY", model="gemini-3.5-flash-lite",
                                   temp=1.0, conc=1, cap=None, plan=REDUCED),
@@ -154,19 +155,31 @@ def openrouter_guard(key: str) -> str | None:
     """
     import urllib.request
 
-    try:
-        trace = urllib.request.urlopen("https://openrouter.ai/cdn-cgi/trace", timeout=20).read().decode()
-        loc = next((ln[4:] for ln in trace.splitlines() if ln.startswith("loc=")), "")
-    except Exception as e:  # noqa: BLE001
-        return f"could not verify exit location ({e})"
+    loc, last_err = "", None
+    for attempt in range(3):  # a single TLS timeout through the proxy is common
+        try:
+            trace = urllib.request.urlopen("https://openrouter.ai/cdn-cgi/trace", timeout=30).read().decode()
+            loc = next((ln[4:] for ln in trace.splitlines() if ln.startswith("loc=")), "")
+            break
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            time.sleep(10 * (attempt + 1))
+    else:
+        return f"could not verify exit location after 3 tries ({last_err})"
     if not loc or loc in _OR_BLOCKED_LOC:
         return f"exit location is {loc or 'unknown'}; proxy not active"
-    try:
-        req = urllib.request.Request("https://openrouter.ai/api/v1/key",
-                                     headers={"Authorization": f"Bearer {key}"})
-        usage = float(json.load(urllib.request.urlopen(req, timeout=20))["data"]["usage"])
-    except Exception as e:  # noqa: BLE001
-        return f"could not read key usage ({e})"
+    usage = None
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request("https://openrouter.ai/api/v1/key",
+                                         headers={"Authorization": f"Bearer {key}"})
+            usage = float(json.load(urllib.request.urlopen(req, timeout=30))["data"]["usage"])
+            break
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            time.sleep(10 * (attempt + 1))
+    if usage is None:
+        return f"could not read key usage after 3 tries ({last_err})"
     if usage >= OR_TOTAL_CAP_USD:
         return f"OpenRouter key usage ${usage:.2f} >= ${OR_TOTAL_CAP_USD:.2f}"
     return None
@@ -284,6 +297,12 @@ def main() -> int:
     for lb in labels:
         if lb not in MODELS:
             ap.error(f"unknown model {lb!r}; known: {', '.join(MODELS)}")
+        c = MODELS[lb]
+        missing = [k for k in ("base", "key", "model", "temp", "conc", "plan") if k not in c]
+        if missing:
+            ap.error(f"{lb}: config is missing {missing}")
+        if c["base"] in (ARK, OPENROUTER) and not (c.get("cap") or c.get("cap_usd")):
+            ap.error(f"{lb}: billed endpoint without a budget cap")
     secret = Path(args.secret_file).read_text().strip() if args.split == "test" else None
 
     meta_path = Path(args.out) / "models.json"
