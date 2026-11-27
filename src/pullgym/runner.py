@@ -47,6 +47,19 @@ _PYTHON_FENCE_RE = re.compile(r"```(?:python|py)\s*\n(.*?)```", re.DOTALL | re.I
 class AgentError(RuntimeError):
     """Unrecoverable agent or API error during an episode."""
 
+    def __init__(self, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+# Client errors that a model's own generation can cause mid-episode (malformed
+# tool-call JSON rejected by the provider, context-window overflow). After turn 1
+# they end the episode and the answer on disk is scored, so re-running with
+# `--resume` cannot keep only the lucky draws. On turn 1 they almost always mean
+# a configuration problem, so they still raise. 413 (provider request-size or
+# rate limits) and 429 are not the model's fault and are never scored.
+MODEL_ATTRIBUTABLE_HTTP = frozenset({400, 422})
+
 
 @dataclass
 class EpisodeWorkspace:
@@ -183,6 +196,7 @@ class AgentRunResult:
     turns: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    api_error: str | None = None
     transcript: list[dict[str, Any]] = field(default_factory=list)
     log_lines: list[str] = field(default_factory=list)
 
@@ -347,7 +361,7 @@ def openai_http_chat(
                 except Exception:
                     pass
                 retry_after = e.headers.get("Retry-After") if e.headers else None
-                last_err = AgentError(f"HTTP {e.code} from {endpoint}: {detail}")
+                last_err = AgentError(f"HTTP {e.code} from {endpoint}: {detail}", status=e.code)
                 if e.code in {429, 500, 502, 503, 504} and attempt < max_retries:
                     wait = min(2.0**attempt, 30.0)
                     if retry_after:
@@ -463,7 +477,17 @@ class OpenAICompatibleAgent:
                 payload["tools"] = OPENAI_TOOLS
                 payload["tool_choice"] = "auto"
 
-            resp = self._chat(payload)
+            try:
+                resp = self._chat(payload)
+            except AgentError as e:
+                if turn == 1 or e.status not in MODEL_ATTRIBUTABLE_HTTP:
+                    raise
+                result.api_error = str(e)[:500]
+                result.log_lines.append(
+                    f"turn {turn}: api_error status={e.status}; episode ended "
+                    f"(answer_status={status()})"
+                )
+                break
             result.turns = turn
             usage = resp.get("usage") or {}
             result.prompt_tokens += int(usage.get("prompt_tokens") or 0)
@@ -695,6 +719,7 @@ def run_episode(
             "prompt_tokens": run_res.prompt_tokens,
             "completion_tokens": run_res.completion_tokens,
         },
+        **({"api_error": run_res.api_error} if run_res.api_error else {}),
         "rewards": scored["rewards"],
     }
     (trial_dir / "result.json").write_text(json.dumps(result_doc, indent=2), encoding="utf-8")

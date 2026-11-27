@@ -549,3 +549,30 @@ def test_tool_observations_carry_turn_and_status_and_early_warning(tmp_path):
     assert "3 turns left" in notes["3/6"]
     assert "Final turn next" in notes["5/6"]
     assert notes["1/6"] == notes["2/6"] == notes["4/6"] == ""
+
+
+def test_model_attributable_http_error_ends_episode_after_turn_one(tmp_path):
+    """A provider 400 caused by the model's own output (e.g. malformed tool-call JSON)
+    ends the episode and scores what is on disk; on turn 1 it still raises so that a
+    misconfiguration is retried by --resume instead of being scored."""
+    fam = get_family("weighted_mean")
+
+    def chat(payload):
+        turn = sum(1 for m in payload["messages"] if m["role"] == "assistant")
+        if turn == 0:
+            return {"choices": [{"message": {"role": "assistant",
+                                             "content": "```python\nprint('look')\n```"}}]}
+        raise AgentError("HTTP 400 from x: tool_use_failed", status=400)
+
+    agent = OpenAICompatibleAgent(model="mock/m", chat_fn=chat, tool_mode="code", max_turns=5)
+    oc = run_episode(fam, 0, "dev", "calibrated", agent, tmp_path / "j")
+    assert oc.error is None and oc.rewards["valid"] == 0.0
+    res = json.loads((oc.trial_dir / "result.json").read_text())
+    assert "tool_use_failed" in res["api_error"] and res["usage"]["turns"] == 1
+
+    def chat_first(payload):
+        raise AgentError("HTTP 400 from x: unknown model", status=400)
+
+    agent2 = OpenAICompatibleAgent(model="mock/m2", chat_fn=chat_first, tool_mode="code")
+    oc2 = run_episode(fam, 0, "dev", "calibrated", agent2, tmp_path / "j2")
+    assert oc2.error is not None and (oc2.trial_dir / "exception.txt").is_file()
