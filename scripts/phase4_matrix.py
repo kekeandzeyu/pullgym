@@ -43,6 +43,12 @@ GEMINI = "https://generativelanguage.googleapis.com/v1beta/openai"
 ARK = "https://ark.cn-beijing.volces.com/api/v3"  # Volcengine Ark, pay as you go
 ZHIPU = "https://open.bigmodel.cn/api/paas/v4"
 MS = "https://api-inference.modelscope.cn/v1"
+OPENROUTER = "https://openrouter.ai/api/v1"
+# Hard ceiling on the OpenRouter key's real usage (USD, read from /api/v1/key before
+# every chunk). The key itself is limited to $20 by OpenRouter; this leaves room for
+# chunks already in flight.
+OR_TOTAL_CAP_USD = 18.5
+_OR_BLOCKED_LOC = {"CN", "HK", "MO"}
 
 TIER5 = [f.name for f in FAMILIES.values() if f.tier == 5]
 TIER14 = [f.name for f in FAMILIES.values() if f.tier < 5]
@@ -78,6 +84,24 @@ MODELS: dict[str, dict] = {
                             temp=1.0, conc=4, cap=60.0, plan=[("t5-cal", 15)]),
     "kimi-k3.1-pro": dict(base=ARK, key="ARK_API_KEY", model="kimi-k3-1-pro-261024",
                           temp=1.0, conc=4, cap=100.0, plan=[("t5-cal", 12)]),
+    # OpenRouter (prepaid, USD). Cost is the exact usage.cost OpenRouter reports.
+    # Pilot costs per Tier-5 episode: Haiku $0.002, Luna $0.007, Sonnet $0.04,
+    # GPT-6.2 Sol $0.12, Gemini 4 Hydrogen $0.33 (dropped: too few episodes per $).
+    "claude-haiku-5.5": dict(base=OPENROUTER, key="OPENROUTER_API_KEY", model="anthropic/claude-haiku-5.5",
+                             temp=1.0, conc=4, cap_usd=1.5, plan=REDUCED, cache=True,
+                             extra={"usage": {"include": True}}),
+    "gpt-6-luna": dict(base=OPENROUTER, key="OPENROUTER_API_KEY", model="openai/gpt-6-luna",
+                       temp=1.0, conc=4, cap_usd=2.5, plan=REDUCED,
+                       extra={"usage": {"include": True}}),
+    "claude-sonnet-5.5": dict(base=OPENROUTER, key="OPENROUTER_API_KEY", model="anthropic/claude-sonnet-5.5",
+                              temp=1.0, conc=4, cap_usd=5.5, plan=[("t5-cal", 25), ("t5-neu", 25)], cache=True,
+                              extra={"usage": {"include": True}}),
+    "gpt-6.2-sol": dict(base=OPENROUTER, key="OPENROUTER_API_KEY", model="openai/gpt-6.2-sol",
+                        temp=1.0, conc=4, cap_usd=4.5, plan=[("t5-cal", 25)],
+                        extra={"usage": {"include": True}}),
+    "gemini-3.8-flash": dict(base=OPENROUTER, key="OPENROUTER_API_KEY", model="google/gemini-3.8-flash",
+                             temp=1.0, conc=4, cap_usd=2.5, plan=[("t5-cal", 25)],
+                             extra={"usage": {"include": True}}),
     "gemini-3.5-flash-lite": dict(base=GEMINI, key="GEMINI_API_KEY", model="gemini-3.5-flash-lite",
                                   temp=1.0, conc=1, cap=None, plan=REDUCED),
 }
@@ -117,9 +141,35 @@ def spend(label: str, out: Path) -> tuple[float, int]:
             r = json.loads(f.read_text())
         except (OSError, ValueError):
             continue
-        total += episode_cost(model_id, r.get("usage") or {}, f.stat().st_mtime)
+        u = r.get("usage") or {}
+        total += float(u.get("cost") or 0.0) if MODELS[label].get("cap_usd") else episode_cost(model_id, u, f.stat().st_mtime)
         n += 1
     return total, n
+
+
+def openrouter_guard(key: str) -> str | None:
+    """Read-only pre-chunk check for OpenRouter: exit location and real key usage.
+
+    Returns a reason to stop, or None. Never changes any network setting.
+    """
+    import urllib.request
+
+    try:
+        trace = urllib.request.urlopen("https://openrouter.ai/cdn-cgi/trace", timeout=20).read().decode()
+        loc = next((ln[4:] for ln in trace.splitlines() if ln.startswith("loc=")), "")
+    except Exception as e:  # noqa: BLE001
+        return f"could not verify exit location ({e})"
+    if not loc or loc in _OR_BLOCKED_LOC:
+        return f"exit location is {loc or 'unknown'}; proxy not active"
+    try:
+        req = urllib.request.Request("https://openrouter.ai/api/v1/key",
+                                     headers={"Authorization": f"Bearer {key}"})
+        usage = float(json.load(urllib.request.urlopen(req, timeout=20))["data"]["usage"])
+    except Exception as e:  # noqa: BLE001
+        return f"could not read key usage ({e})"
+    if usage >= OR_TOTAL_CAP_USD:
+        return f"OpenRouter key usage ${usage:.2f} >= ${OR_TOTAL_CAP_USD:.2f}"
+    return None
 
 
 def _quota_like(err: str) -> bool:
@@ -143,10 +193,16 @@ def run_model(label: str, args: argparse.Namespace, secret: str | None) -> dict:
         temperature=cfg["temp"],
         max_tokens=args.max_tokens,
         http_timeout_sec=300.0,
+        extra_body=cfg.get("extra"),
+        cache_breakpoint=cfg.get("cache", False),
     )
     out = Path(args.out)
-    cap = cfg["cap"] if args.cap_scale is None or cfg["cap"] is None else cfg["cap"] * args.cap_scale
+    cap = cfg.get("cap_usd") or cfg.get("cap")
+    if cap is not None and args.cap_scale is not None:
+        cap *= args.cap_scale
+    unit = "USD" if cfg.get("cap_usd") else "CNY"
     tally: Counter = Counter()
+    quota_streak = 0  # consecutive quota-like failures across chunks
     for stage, n_seeds in cfg["plan"]:
         variant, fams = STAGES[stage]
         job_root = out / f"{args.split}_{variant}"
@@ -154,10 +210,15 @@ def run_model(label: str, args: argparse.Namespace, secret: str | None) -> dict:
         for chunk_start in range(args.start, args.start + n_seeds, conc):
             chunk_n = min(conc, args.start + n_seeds - chunk_start)
             for fam_name in fams:
+                if cfg["base"] == OPENROUTER:
+                    reason = openrouter_guard(key)
+                    if reason:
+                        log(f"[{label}] OpenRouter guard: {reason}; stopping")
+                        return {"label": label, "status": "guard", **tally}
                 if cap is not None:
                     spent, _ = spend(label, out)
                     if spent >= cap:
-                        log(f"[{label}] budget cap reached: {spent:.2f} >= {cap:.2f} CNY; stopping")
+                        log(f"[{label}] budget cap reached: {spent:.2f} >= {cap:.2f} {unit}; stopping")
                         return {"label": label, "status": "cap", "spent": round(spent, 2), **tally}
                 _, outcomes = run_suite(
                     [get_family(fam_name)],
@@ -179,10 +240,14 @@ def run_model(label: str, args: argparse.Namespace, secret: str | None) -> dict:
                 if ran:
                     spent, n_ep = spend(label, out)
                     log(f"[{label}] {stage} {fam_name} seeds {chunk_start}-{chunk_start + chunk_n - 1}: "
-                        f"{len(ran) - len(errs)} new, {len(errs)} errors; spend {spent:.2f} CNY over {n_ep} episodes")
+                        f"{len(ran) - len(errs)} new, {len(errs)} errors; spend {spent:.2f} {unit} over {n_ep} episodes")
                 for o in errs:
                     log(f"[{label}]   error {o.task_name}: {o.error[:200]}")
-                if len(ran) >= 2 and len(errs) >= 0.6 * len(ran) and all(_quota_like(o.error) for o in errs):
+                if errs and len(errs) == len(ran) and all(_quota_like(o.error) for o in errs):
+                    quota_streak += len(errs)
+                elif ran:
+                    quota_streak = 0
+                if quota_streak >= 3:
                     log(f"[{label}] quota, balance or rate limit hit; parked until next run")
                     return {"label": label, "status": "parked", **tally}
     return {"label": label, "status": "done", **tally}
@@ -205,10 +270,13 @@ def main() -> int:
         total = 0.0
         for lb in MODELS:
             s, n = spend(lb, Path(args.out))
-            total += s
-            cap = MODELS[lb]["cap"]
-            print(f"{lb:26s} {n:4d} episodes  {s:7.2f} CNY" + (f"  (cap {cap:.0f})" if cap else ""))
-        print(f"{'total':26s}       {total:7.2f} CNY  (list prices; free quotas not deducted)")
+            usd = MODELS[lb].get("cap_usd")
+            cap = usd or MODELS[lb].get("cap")
+            unit = "USD" if usd else "CNY"
+            if not usd:
+                total += 0  # CNY and USD are reported separately
+            print(f"{lb:26s} {n:4d} episodes  {s:7.2f} {unit}" + (f"  (cap {cap:.1f})" if cap else ""))
+        print("CNY rows use Ark list prices (free quotas not deducted); USD rows are OpenRouter's billed cost.")
         return 0
     if not args.models:
         ap.error("--models is required")
@@ -225,7 +293,8 @@ def main() -> int:
         c = MODELS[lb]
         meta[lb] = {"endpoint": c["base"], "model": c["model"], "temperature": c["temp"],
                     "tool_mode": "tools", "max_turns": args.max_turns, "max_tokens": args.max_tokens,
-                    "plan": c["plan"], "cap_cny": c["cap"]}
+                    "plan": c["plan"], "cap_cny": c.get("cap"), "cap_usd": c.get("cap_usd"),
+                    "cache_breakpoint": c.get("cache", False)}
     meta_path.write_text(json.dumps(meta, indent=2))
 
     results: list[dict] = []

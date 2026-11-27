@@ -595,3 +595,27 @@ def test_cached_prompt_tokens_are_recorded(tmp_path):
     oc = run_episode(fam, 0, "dev", "calibrated", agent, tmp_path / "j")
     usage = json.loads((oc.trial_dir / "result.json").read_text())["usage"]
     assert usage["prompt_tokens"] == 220 and usage["cached_tokens"] == 164
+
+
+def test_cache_breakpoint_and_cost_accounting(tmp_path):
+    fam = get_family("weighted_mean")
+    seen = []
+
+    def chat(payload):
+        seen.append(payload["messages"])
+        turn = sum(1 for m in payload["messages"] if m["role"] == "assistant")
+        content = "```python\nprint(1)\n```" if turn == 0 else "done"
+        return {"choices": [{"message": {"role": "assistant", "content": content}}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 2, "cost": 0.0015}}
+
+    agent = OpenAICompatibleAgent(model="mock/c", chat_fn=chat, tool_mode="code", max_turns=3,
+                                  cache_breakpoint=True)
+    oc = run_episode(fam, 0, "dev", "calibrated", agent, tmp_path / "j")
+    # Only the newest message carries the breakpoint, and the transcript stays plain.
+    for msgs in seen:
+        assert msgs[-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+        assert all(isinstance(m["content"], str) for m in msgs[:-1])
+    transcript = json.loads((oc.trial_dir / "transcript.json").read_text())
+    assert all(isinstance(m.get("content"), str) for m in transcript)
+    usage = json.loads((oc.trial_dir / "result.json").read_text())["usage"]
+    assert usage["cost"] == 0.003

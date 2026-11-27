@@ -197,6 +197,7 @@ class AgentRunResult:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     cached_tokens: int = 0
+    cost: float = 0.0
     api_error: str | None = None
     transcript: list[dict[str, Any]] = field(default_factory=list)
     log_lines: list[str] = field(default_factory=list)
@@ -390,6 +391,28 @@ def openai_http_chat(
     return _call
 
 
+def _with_cache_breakpoint(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Copy of `messages` whose last message carries an ephemeral cache_control block.
+
+    One breakpoint per request on the newest message: each turn reads the prefix
+    cached by the previous turn and writes the extended one. The transcript is not
+    modified.
+    """
+    if not messages:
+        return messages
+    last = dict(messages[-1])
+    content = last.get("content")
+    if isinstance(content, str) and content:
+        last["content"] = [{"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}]
+    elif isinstance(content, list) and content and isinstance(content[-1], dict):
+        blocks = [dict(b) for b in content]
+        blocks[-1]["cache_control"] = {"type": "ephemeral"}
+        last["content"] = blocks
+    else:
+        return messages
+    return [*messages[:-1], last]
+
+
 class OpenAICompatibleAgent:
     """Multi-turn tool-using agent backed by any OpenAI-compatible endpoint."""
 
@@ -408,6 +431,7 @@ class OpenAICompatibleAgent:
         tool_mode: str = "tools",
         http_timeout_sec: float = 180.0,
         extra_body: dict[str, Any] | None = None,
+        cache_breakpoint: bool = False,
     ) -> None:
         if tool_mode not in {"tools", "code"}:
             raise ValueError(f"unknown tool_mode {tool_mode!r}; expected 'tools' or 'code'")
@@ -417,6 +441,9 @@ class OpenAICompatibleAgent:
         self.max_tokens = max_tokens
         self.tool_mode = tool_mode
         self.extra_body = dict(extra_body or {})
+        # Mark the newest message as a prompt-cache breakpoint on every request
+        # (Anthropic models, directly or via OpenRouter, cache only marked prefixes).
+        self.cache_breakpoint = cache_breakpoint
         if chat_fn is not None:
             self._chat = chat_fn
         else:
@@ -469,7 +496,7 @@ class OpenAICompatibleAgent:
         for turn in range(1, self.max_turns + 1):
             payload: dict[str, Any] = {
                 "model": self.model_name,
-                "messages": messages,
+                "messages": _with_cache_breakpoint(messages) if self.cache_breakpoint else messages,
                 "temperature": self.temperature,
                 "max_tokens": self.max_tokens,
                 **self.extra_body,
@@ -495,6 +522,9 @@ class OpenAICompatibleAgent:
             result.completion_tokens += int(usage.get("completion_tokens") or 0)
             # Prompt tokens served from the provider's prefix cache (OpenAI-style
             # prompt_tokens_details, or DeepSeek's prompt_cache_hit_tokens).
+            # Billed cost when the provider reports it (OpenRouter: usage.cost, USD).
+            if isinstance(usage.get("cost"), (int, float)):
+                result.cost += float(usage["cost"])
             details = usage.get("prompt_tokens_details") or {}
             result.cached_tokens += int(
                 details.get("cached_tokens") or usage.get("prompt_cache_hit_tokens") or 0
@@ -726,6 +756,7 @@ def run_episode(
             "prompt_tokens": run_res.prompt_tokens,
             "completion_tokens": run_res.completion_tokens,
             "cached_tokens": run_res.cached_tokens,
+            **({"cost": round(run_res.cost, 6)} if run_res.cost else {}),
         },
         **({"api_error": run_res.api_error} if run_res.api_error else {}),
         "rewards": scored["rewards"],
