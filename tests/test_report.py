@@ -193,3 +193,15 @@ def test_report_formats_and_harness_warning(tmp_path):
     assert "WARNING: trials span several harness versions" in report(jobs, truth_bins=1)
     with pytest.raises(ValueError):
         report(jobs, baseline="no-such-model")
+
+
+def test_report_where_filter(tmp_path):
+    from pullgym.families import get_family
+    from pullgym.runner import OracleAgent, run_suite
+
+    for fam in ("counting_rate", "outliers"):
+        run_suite([get_family(fam)], n=2, agent=OracleAgent(), out_dir=tmp_path, job_id="o",
+                  concurrency=1)
+    txt = report(tmp_path, group_by="model,family", truth_bins=1, where={"tier": {"5"}})
+    assert "outliers" in txt and "counting_rate" not in txt
+    assert report(tmp_path, where={"tier": {"9"}}).startswith("No pullgym verifier output")

@@ -77,6 +77,13 @@ def cmd_probe(args) -> int:
 def cmd_report(args) -> int:
     from pullgym.report import report
 
+    where: dict[str, set[str]] = {}
+    for spec in args.where:
+        key, sep, vals = spec.partition("=")
+        if not sep or not key.strip() or not vals:
+            print(f"error: --where expects KEY=V1,V2, got {spec!r}", file=sys.stderr)
+            return 2
+        where.setdefault(key.strip(), set()).update(v.strip() for v in vals.split(","))
     try:
         text = report(
             [Path(p) for p in args.path],
@@ -85,6 +92,7 @@ def cmd_report(args) -> int:
             paired=args.paired,
             baseline=args.baseline,
             fmt=args.format,
+            where=where or None,
         )
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
@@ -208,6 +216,13 @@ def main(argv: list[str] | None = None) -> int:
         help="add paired differences (bootstrap CIs, McNemar) of every model against this one",
     )
     r.add_argument("--format", choices=["text", "md", "latex", "json"], default="text")
+    r.add_argument(
+        "--where",
+        action="append",
+        default=[],
+        metavar="KEY=V1,V2",
+        help="keep only rows whose KEY is one of the values (repeatable), e.g. tier=5",
+    )
     r.set_defaults(fn=cmd_report)
 
     rf = sub.add_parser("run-fast", help="run episodes locally without Docker")

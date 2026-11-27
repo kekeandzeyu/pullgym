@@ -294,11 +294,19 @@ def report(
     paired: bool = False,
     baseline: str | None = None,
     fmt: str = "text",
+    where: dict[str, set[str]] | None = None,
 ) -> str:
+    """Leaderboard text for one or more jobs directories.
+
+    `where` keeps only rows whose column values (compared as strings) are in the
+    given sets, e.g. ``{"tier": {"5"}, "variant": {"calibrated"}}``.
+    """
     if fmt not in FORMATS:
         raise ValueError(f"unknown format {fmt!r}; known: {', '.join(FORMATS)}")
     keys = [k.strip() for k in group_by.split(",") if k.strip()]
     rows, missing = load_episodes(path)
+    if where:
+        rows = [r for r in rows if all(str(r.get(k)) in vals for k, vals in where.items())]
     if not rows:
         where = ", ".join(map(str, path)) if isinstance(path, (list, tuple)) else path
         msg = f"No pullgym verifier output found under {where}."

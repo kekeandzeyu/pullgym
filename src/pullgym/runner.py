@@ -196,6 +196,7 @@ class AgentRunResult:
     turns: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    cached_tokens: int = 0
     api_error: str | None = None
     transcript: list[dict[str, Any]] = field(default_factory=list)
     log_lines: list[str] = field(default_factory=list)
@@ -492,6 +493,12 @@ class OpenAICompatibleAgent:
             usage = resp.get("usage") or {}
             result.prompt_tokens += int(usage.get("prompt_tokens") or 0)
             result.completion_tokens += int(usage.get("completion_tokens") or 0)
+            # Prompt tokens served from the provider's prefix cache (OpenAI-style
+            # prompt_tokens_details, or DeepSeek's prompt_cache_hit_tokens).
+            details = usage.get("prompt_tokens_details") or {}
+            result.cached_tokens += int(
+                details.get("cached_tokens") or usage.get("prompt_cache_hit_tokens") or 0
+            )
 
             choices = resp.get("choices") or []
             if not choices:
@@ -718,6 +725,7 @@ def run_episode(
             "turns": run_res.turns,
             "prompt_tokens": run_res.prompt_tokens,
             "completion_tokens": run_res.completion_tokens,
+            "cached_tokens": run_res.cached_tokens,
         },
         **({"api_error": run_res.api_error} if run_res.api_error else {}),
         "rewards": scored["rewards"],

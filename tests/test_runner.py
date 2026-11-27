@@ -224,7 +224,7 @@ def test_openai_agent_tools_loop_and_report(tmp_path):
     assert turn2_asst.get("reasoning_content") == "Inspecting data directory first."
 
     result_doc = json.loads((oc.trial_dir / "result.json").read_text())
-    assert result_doc["usage"] == {"turns": 3, "prompt_tokens": 550, "completion_tokens": 105}
+    assert result_doc["usage"] == {"turns": 3, "prompt_tokens": 550, "completion_tokens": 105, "cached_tokens": 0}
     assert trial_agent(oc.trial_dir) == ("pullgym-fast", "mock/test-model")
     assert (oc.trial_dir / "transcript.json").is_file()
 
@@ -576,3 +576,22 @@ def test_model_attributable_http_error_ends_episode_after_turn_one(tmp_path):
     agent2 = OpenAICompatibleAgent(model="mock/m2", chat_fn=chat_first, tool_mode="code")
     oc2 = run_episode(fam, 0, "dev", "calibrated", agent2, tmp_path / "j2")
     assert oc2.error is not None and (oc2.trial_dir / "exception.txt").is_file()
+
+
+def test_cached_prompt_tokens_are_recorded(tmp_path):
+    fam = get_family("weighted_mean")
+    usages = [
+        {"prompt_tokens": 100, "completion_tokens": 5, "prompt_tokens_details": {"cached_tokens": 64}},
+        {"prompt_tokens": 120, "completion_tokens": 5, "prompt_cache_hit_tokens": 100},
+    ]
+
+    def chat(payload):
+        turn = sum(1 for m in payload["messages"] if m["role"] == "assistant")
+        content = "```python\nprint(1)\n```" if turn == 0 else "done"
+        return {"choices": [{"message": {"role": "assistant", "content": content}}],
+                "usage": usages[turn]}
+
+    agent = OpenAICompatibleAgent(model="mock/c", chat_fn=chat, tool_mode="code", max_turns=3)
+    oc = run_episode(fam, 0, "dev", "calibrated", agent, tmp_path / "j")
+    usage = json.loads((oc.trial_dir / "result.json").read_text())["usage"]
+    assert usage["prompt_tokens"] == 220 and usage["cached_tokens"] == 164
