@@ -29,7 +29,7 @@ We ran two controlled two-arm GRPO rounds from the exact same base model, datase
 
 ## Full Quantitative Results
 
-> **Valid-rate vs. fallback audit note (`docs/ROADMAP.md` §4):** Official `pullgym report` scores missing/invalid answers as `prior − 1` (`~ −3`), which is milder than a `−20` overconfident systematic miss. Every table below therefore reports **`valid%`**, **valid-only point accuracy (`|q50 − θ| ≤ σ_ref`)**, **valid-only coverage / pull width / sharpness / mean reward (`rew_v`)**, and **all-episode mean reward (`rew_all`)** side by side, followed by **paired valid-only intersections** with zero selection or fallback bias.
+> **Valid-rate vs. fallback audit note (`docs/ROADMAP.md` §3):** Official `pullgym report` scores missing/invalid answers as `prior − 1` (`~ −3`), which is milder than a `−20` overconfident systematic miss. Every table below therefore reports **`valid%`**, **valid-only point accuracy (`|q50 − θ| ≤ σ_ref`)**, **valid-only coverage / pull width / sharpness / mean reward (`rew_v`)**, and **all-episode mean reward (`rew_all`)** side by side, followed by **paired valid-only intersections** with zero selection or fallback bias.
 
 ### 1. All 12 Families Combined (`calibrated`, `n = 220`)
 
@@ -94,17 +94,49 @@ Per-family highlights at `100%` valid for **`log_score_r2`**:
 | | `binary_r2` | 19 | 15.8% | **31.6% ± 10.7%** | **36.8% ± 11.1%** | 103.78 | 0.44 | −10.578 |
 | | **`log_score_r2`** | **19** | **21.1%** | **31.6% ± 10.7%** | **36.8% ± 11.1%** | **11.26** | **0.63** | **−9.399** |
 
-![OOD Calibration Comparison (All Models)](assets/ood_calibration_calibrated.png)
-
-*Note on chart y-axes:* Panel B of `assets/rlvr_comparison.png` plots **valid-only** mean log-score reward (`rew_v`), whereas the right panel of `assets/ood_calibration_calibrated.png` plots **all-episode** mean log-score reward (`rew_all`, which includes the `prior − 1 ≈ −3` missing/invalid fallback from `scoring.py`).
-
 ---
 
-## Mandatory Audits & Code-Level Verification (`docs/ROADMAP.md` §4)
+### 5. Seed-Paired Inference (Re-analysis with `pullgym report --baseline`, harness `0.2.0.dev0`)
 
-### 1. Lazy Global Width-Inflation Audit: Cleanly Passed Even at `KL = 0.076`
+Sections 1–4 compare unpaired means and quote binomial SEs per arm. Every model was evaluated on the *same* dev seeds, so the right test is per task: paired bootstrap 95% CIs on reward differences and exact McNemar tests on coverage. The numbers below come from the saved trials in `runs/eval_runs/` and `runs/eval_runs_extra/`. Reproduce them with, for example:
+
+```bash
+cd runs/eval_runs
+uv run pullgym report *_id_calibrated  --by model --truth-bins 1 --baseline qwen3-8b_binary_full_r2
+uv run pullgym report *_ood_calibrated --by model --truth-bins 1 --baseline qwen3-8b_binary_full_r2
+```
+
+How to read the columns:
+
+- `Δrew_all` uses every shared task, with an invalid answer scored as prior − 1, so it has no survivorship bias.
+- The other columns use only tasks both models answered validly (`n_valid`).
+- `+/−` counts tasks covered at 68% by only the first model / only the second.
+
+| Comparison | Slice | `n_all` | Δrew_all [95% CI] | `n_valid` | Δrew_v [95% CI] | Δcov68 (+/−, McNemar p) | Δpinball skill (clipped) |
+| :--- | :--- | ---: | :--- | ---: | :--- | :--- | :--- |
+| `log_score_r2` − `binary_r2` | ID, calibrated | 120 | **+1.21 [+0.53, +2.02]** | 118 | **+1.17 [+0.49, +1.98]** | −0.8 ± 2.8 pt (5/6, p=1.0) | **+0.58 [+0.24, +1.03]** |
+| `log_score_r2` − `base` | ID, calibrated | 120 | **+4.03 [+3.06, +5.10]** | 70 | **+3.69 [+2.04, +5.46]** | **+12.9 ± 5.3 pt (12/3, p=0.035)** | **+3.97 [+2.26, +5.77]** |
+| `binary_r2` − `base` | ID, calibrated | 120 | **+2.82 [+1.49, +4.16]** | 69 | +1.85 [−0.35, +4.01] | +13.0 ± 6.1 pt (14/5, p=0.064) | **+3.45 [+1.78, +5.23]** |
+| `log_score_r2` − `binary_r2` | OOD, calibrated | 100 | +1.55 [−0.33, +3.41] | 34 | +2.04 [−1.00, +5.02] | +11.8 ± 10.8 pt (9/5, p=0.42) | +1.97 [−0.81, +4.84] |
+| `log_score_r2` − `base` | OOD, calibrated | 100 | −0.38 [−2.45, +1.77] | 33 | +2.49 [−1.81, +6.64] | +12.1 ± 10.3 pt (8/4, p=0.39) | +2.30 [−0.90, +5.49] |
+| `log_score_r2` − `binary_r2` | OOD, neutral | 100 | +1.73 [−0.01, +3.44] | 32 | +0.47 [−2.99, +3.98] | −12.5 ± 9.6 pt (3/7, p=0.34) | −1.44 [−3.82, +0.76] |
+
+Bold marks intervals that exclude zero. Conclusions:
+
+1. **In distribution, `log_score` beats `binary`, and the gain is in interval width and tails.**
+   - The reward and pinball-skill gains are significant. Pinball skill is a proper score that GRPO did not optimize, so the reward gain is not an artefact of the piecewise-Gaussian log-density.
+   - Coverage is unchanged, which is what a proper score predicts once both policies centre their intervals equally well.
+2. **OOD transfer is not significant in any comparison.**
+   - The `+11.8` pt paired-valid cov68 gain in §4 rests on 9 vs 5 discordant tasks, and 18 of its 34 pairs are `dead_time`.
+   - On `neutral` OOD the coverage difference has the opposite sign.
+   - The `dead_time` code-level example in the audits below is a real qualitative change, but one family's anecdote is not evidence of transfer.
+3. **One training run per arm.** Run-to-run variance under GRPO is not measured, so even the ID result needs replication with at least 3 seeds per arm (v0.2 Phase 5).
+
+## Mandatory Audits & Code-Level Verification (`docs/ROADMAP.md` §3)
+
+### 1. Lazy Global Width-Inflation Audit: No Global Inflation at `KL = 0.076`
 Under `log_score_reward`, 10× overconfident intervals cost `~ −12` while 10× conservative intervals cost only `~ −1.8`, making lazy global error-bar inflation a serious reward-hacking risk. **Round 2 proves `log_score_r2` did NOT cheat:**
-- **Tier-1 Clean sharpness is exact `1.00`:** `line_fit = 1.00`, `weighted_mean = 1.00`, `counting_rate = 1.03`.
+- **Tier-1 clean sharpness:** the medians are `line_fit = 1.00`, `weighted_mean = 1.00`, `counting_rate = 1.03`. The *geometric means* (`sharp gm` in `pullgym report`) are `1.00`, `1.00` and `1.56` for `log_score_r2`, against `1.01`, `1.00` and `7.32` for `binary_r2` and `1.14`, `1.00` and `7.04` for `base`. The median is `1.00` for every model, so it is a weak audit. The geometric mean shows that `log_score_r2` removed the 10× `counting_rate` unit bug in most episodes but not all.
 - **Contrast with `binary_r2` on `counting_rate-dev-00003`:** `binary_r2` divided `mean_count_rate = np.mean(counts) / 10` by `10 s` but **forgot to divide `std_dev` by `10`**, yielding **`10×` too-wide intervals** (`sharpness = 10.04`, `pull_width = 0.08`, `rew = −1.511`) while still collecting full `+1.0` binary reward! `log_score_r2` fixed the exact factor (`np.sqrt(np.var(counts) / (len(counts) * 10**2))`, `sharpness = 1.03`, `rew = −0.212`).
 
 ### 2. Code-Level Evidence of Procedural Uncertainty Propagation (Not Scalar Rescaling)

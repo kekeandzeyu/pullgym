@@ -1,3 +1,4 @@
+import pytest
 import json
 
 from pullgym import scoring
@@ -99,3 +100,96 @@ def test_coverage_by_truth_finds_a_bad_region():
     bins = coverage_by_truth(eps, 3)
     assert [b["n"] for b in bins] == [3, 3, 3]
     assert bins[0]["cov68"] < 1.0 and bins[2]["cov68"] == 1.0
+
+
+def _two_model_jobs(tmp_path, n=6):
+    """model-a answers with the reference; model-b is 2x too narrow and invalid on seed 0."""
+    fam = get_family("line_fit")
+    jobs = tmp_path / "jobs"
+    for seed in range(n):
+        root = export_task(fam, seed, "dev", "calibrated", tmp_path / "tasks")
+        ref = fam.reference_analysis(fam.episode(seed).files)["velocity"]
+        narrow = [ref[2] + 0.5 * (q - ref[2]) for q in ref]
+        _fake_trial(jobs, f"a{seed}", "model-a", root, {"velocity": dict(zip(scoring.KEYS, ref))})
+        b_answer = {"velocity": "oops"} if seed == 0 else {"velocity": dict(zip(scoring.KEYS, narrow))}
+        _fake_trial(jobs, f"b{seed}", "model-b", root, b_answer)
+    return jobs
+
+
+def test_report_rows_have_tier_task_and_pinball(tmp_path):
+    from pullgym.report import load_episodes
+
+    rows, _ = load_episodes(_two_model_jobs(tmp_path, n=2))
+    r = rows[0]
+    assert r["tier"] == 1 and r["task"].startswith("line_fit-dev-")
+    assert r["pinball_skill"] is not None and "pt_acc" in r
+    assert r["harness_version"] == "unknown"  # fixture writes no result.json
+
+
+def test_summarize_valid_vs_all_and_wilson():
+    from pullgym.stats import summarize, wilson_interval
+
+    eps = [
+        {"valid": 1.0, "reward": 1.0, "covered68": 1.0, "covered95": 1.0, "pull": 0.0, "sharpness": 1.0},
+        {"valid": 1.0, "reward": 0.0, "covered68": 1.0, "covered95": 1.0, "pull": 0.5, "sharpness": 4.0},
+        {"valid": 0.0, "reward": -4.0, "covered68": 0.0, "covered95": 1.0, "pull": 9.0, "sharpness": 50.0},
+    ]
+    s = summarize(eps)
+    assert s["n"] == 3 and s["n_valid"] == 2
+    assert s["reward_valid_mean"] == pytest.approx(0.5)
+    assert s["reward_mean"] == pytest.approx(-1.0)
+    assert s["cov68"] == 1.0
+    assert s["sharpness_gmean"] == pytest.approx(2.0)
+    # cli.py reads these
+    assert "cov68_se" in s and "cov95_se" in s
+    # Wilson at the extremes stays inside [0, 1] with non-zero width.
+    lo, hi = wilson_interval(0, 15)
+    assert lo == 0.0 and 0.15 < hi < 0.25
+    lo, hi = wilson_interval(15, 15)
+    assert hi == 1.0 and 0.75 < lo < 0.85
+    assert s["cov68_ci_hi"] == 1.0 and s["cov68_ci_lo"] < 1.0
+
+
+def test_paired_statistics():
+    from pullgym.stats import mcnemar, paired_difference
+
+    d = paired_difference([1.0, 2.0, 3.0, 4.0], [0.0, 1.0, 2.0, 3.0])
+    assert d["mean"] == pytest.approx(1.0) and d["se"] == pytest.approx(0.0)
+    assert d["ci_lo"] == pytest.approx(1.0) and d["ci_hi"] == pytest.approx(1.0)
+    m = mcnemar([1, 1, 1, 0, 1, 0], [0, 0, 1, 0, 1, 1])
+    assert (m["a_only"], m["b_only"]) == (2, 1)
+    assert m["diff"] == pytest.approx(1 / 6)
+    assert 0.0 < m["p"] <= 1.0
+
+
+def test_report_paired_and_baseline(tmp_path):
+    jobs = _two_model_jobs(tmp_path)
+    text = report(jobs, group_by="model", truth_bins=1, paired=True)
+    assert "Paired: 10 of 12 rows" in text
+    # With exactly two models, --paired picks the first as baseline.
+    assert "Paired differences (model - model-a)" in text
+    diff_line = [ln for ln in text.splitlines() if ln.startswith("model-b ")][-1]
+    cells = diff_line.split()
+    assert cells[1] == "model-a" and cells[2] == "6" and cells[3] == "-17pt"
+    # Narrow intervals lose reward against the reference on every valid pair.
+    assert cells[6] == "5" and cells[7].startswith("-")  # "[CI]" cells split in two
+
+    js = json.loads(report(jobs, group_by="model,tier", baseline="model-a", fmt="json"))
+    assert js["baseline"] == "model-a"
+    assert {g["model"] for g in js["groups"]} == {"model-a", "model-b"}
+    d = js["paired_differences"][0]
+    assert d["tier"] == 1 and d["n_valid"] == 5 and d["reward_valid"]["mean"] < 0
+
+
+def test_report_formats_and_harness_warning(tmp_path):
+    jobs = _two_model_jobs(tmp_path, n=3)
+    md = report(jobs, group_by="model", truth_bins=1, fmt="md")
+    assert md.startswith("| model | n | valid |") and "| model-a | 3 | 100% |" in md
+    tex = report(jobs, group_by="model,family", truth_bins=1, fmt="latex", baseline="model-a")
+    assert "\\begin{tabular}" in tex and "line\\_fit" in tex and "\\%" in tex
+    assert "WARNING" not in report(jobs, truth_bins=1)
+    trial = next(jobs.rglob("a0"))
+    (trial / "result.json").write_text(json.dumps({"harness_version": "0.2.0"}))
+    assert "WARNING: trials span several harness versions" in report(jobs, truth_bins=1)
+    with pytest.raises(ValueError):
+        report(jobs, baseline="no-such-model")

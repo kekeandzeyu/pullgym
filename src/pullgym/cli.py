@@ -63,20 +63,33 @@ def cmd_calibrate(args) -> int:
 
 
 def cmd_probe(args) -> int:
-    from pullgym.stats import probe
+    from pullgym.stats import PROBE_DIAGNOSTICS, probe
 
     for fam in _families(args.family):
         print(f"== {fam.name}")
         res = probe(fam, range(args.start, args.start + args.n))
         for name, s in sorted(res.items(), key=lambda kv: -kv[1]["reward_mean"]):
-            print(f"  {name:<20s} reward={s['reward_mean']:+9.3f}  cov68={s['cov68']:.1%}")
+            tag = "  (diagnostic)" if name in PROBE_DIAGNOSTICS else ""
+            print(f"  {name:<20s} reward={s['reward_mean']:+9.3f}  cov68={s['cov68']:.1%}{tag}")
     return 0
 
 
 def cmd_report(args) -> int:
     from pullgym.report import report
 
-    print(report(Path(args.path), group_by=args.by, truth_bins=args.truth_bins))
+    try:
+        text = report(
+            [Path(p) for p in args.path],
+            group_by=args.by,
+            truth_bins=args.truth_bins,
+            paired=args.paired,
+            baseline=args.baseline,
+            fmt=args.format,
+        )
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    print(text)
     return 0
 
 
@@ -177,11 +190,24 @@ def main(argv: list[str] | None = None) -> int:
     pr.set_defaults(fn=cmd_probe)
 
     r = sub.add_parser("report", help="coverage and pull tables from Harbor job output")
-    r.add_argument("path", help="a Harbor jobs directory (searched recursively)")
+    r.add_argument("path", nargs="+", help="one or more jobs directories (searched recursively)")
     r.add_argument(
-        "--by", default="model,family,variant", help="comma list of grouping keys"
+        "--by",
+        default="model,family,variant",
+        help="comma list of grouping keys: model, agent, family, tier, variant, split, "
+        "harness_version",
     )
     r.add_argument("--truth-bins", type=int, default=3, help="bins of the true value (1 = off)")
+    r.add_argument(
+        "--paired",
+        action="store_true",
+        help="restrict the table to tasks every model answered validly",
+    )
+    r.add_argument(
+        "--baseline",
+        help="add paired differences (bootstrap CIs, McNemar) of every model against this one",
+    )
+    r.add_argument("--format", choices=["text", "md", "latex", "json"], default="text")
     r.set_defaults(fn=cmd_report)
 
     rf = sub.add_parser("run-fast", help="run episodes locally without Docker")

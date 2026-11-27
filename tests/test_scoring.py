@@ -157,3 +157,39 @@ def test_reward_is_clipped():
     q = gaussian_quantiles(0.0, 1e-6)
     assert scoring.score_quantity(q, 1.0, 1.0)["reward"] == scoring.REWARD_FLOOR
     assert scoring.score_quantity(q, 0.0, 1.0)["reward"] == scoring.REWARD_CAP
+
+
+def test_multi_quantity_reward_json_averages_calibration_keys(tmp_path):
+    doc = {
+        "family": "f",
+        "quantities": {
+            "a": {"truth": 0.0, "ref_sigma": 1.0, "fallback": [-9.0, -5.0, 0.0, 5.0, 9.0]},
+            "b": {"truth": 10.0, "ref_sigma": 1.0, "fallback": [0.0, 5.0, 10.0, 15.0, 19.0]},
+        },
+    }
+    a = dict(zip(scoring.KEYS, gaussian_quantiles(0.0, 1.0)))  # covers
+    b = dict(zip(scoring.KEYS, gaussian_quantiles(13.0, 1.0)))  # misses by 3 sigma
+    res = scoring.score_episode(_write(tmp_path, {"a": a, "b": b}), doc)
+    r, per_q = res["rewards"], res["details"]["quantities"]
+    assert r["covered68"] == pytest.approx(0.5)
+    for k in ("covered95", "pull", "sharpness", "pinball_skill", "reward"):
+        assert r[k] == pytest.approx((per_q["a"][k] + per_q["b"][k]) / 2)
+
+    invalid = scoring.score_episode(_write(tmp_path, {"a": a}), doc)
+    assert invalid["rewards"]["valid"] == 0.0
+    for k in ("covered68", "covered95", "pull", "sharpness", "pinball_skill"):
+        assert k not in invalid["rewards"]
+
+
+def test_scoring_module_is_stdlib_only():
+    import ast
+    import sys
+
+    tree = ast.parse(open(scoring.__file__, encoding="utf-8").read())
+    mods = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            mods |= {a.name.split(".")[0] for a in node.names}
+        elif isinstance(node, ast.ImportFrom):
+            mods.add((node.module or "").split(".")[0])
+    assert mods <= set(sys.stdlib_module_names) | {"__future__"}, mods

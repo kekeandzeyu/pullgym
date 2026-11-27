@@ -24,7 +24,7 @@ import json
 import shutil
 from pathlib import Path
 
-from pullgym import scoring
+from pullgym import __version__, scoring
 from pullgym.families import Family
 
 AGENT_BASE_IMAGE = "python:3.12-slim"
@@ -137,7 +137,7 @@ def task_toml(family: Family, name: str, split: str, variant: str, seed: int) ->
 
 [task]
 name = "pullgym/{name}"
-version = "0.1.0"
+version = "{__version__}"
 description = {json.dumps(family.title)}
 keywords = ["pullgym", "calibration", "uncertainty", "physics"]
 

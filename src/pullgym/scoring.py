@@ -189,11 +189,12 @@ def score_episode(answer_path: str, truth_doc: dict) -> dict:
         "valid": 1.0 if valid else 0.0,
     }
     # Calibration metrics describe the agent's answer, so they are omitted
-    # when the answer was invalid and the fallback was scored instead.
-    if len(names) == 1 and valid:
-        m = per_q[names[0]]
+    # when the answer was invalid and the fallback was scored instead. With
+    # several quantities, reward.json holds their mean (details.json keeps
+    # each quantity's own numbers).
+    if valid:
         for k in ("covered68", "covered95", "pull", "sharpness", "pinball_skill"):
-            rewards[k] = m[k]
+            rewards[k] = sum(per_q[n][k] for n in names) / len(names)
     details.update(valid=valid, error=error, quantities=per_q, reward=rewards["reward"])
     return {"rewards": rewards, "details": details}
 

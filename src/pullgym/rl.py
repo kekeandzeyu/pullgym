@@ -32,7 +32,7 @@ from typing import Any, Callable
 
 import numpy as np
 
-from pullgym import scoring
+from pullgym import __version__, scoring
 from pullgym.export import VARIANTS, build_truth_doc, instruction, task_id
 from pullgym.families import Family, get_family
 from pullgym.runner import (
@@ -466,6 +466,7 @@ def evaluate_completions_to_trials(
             json.dumps(scored["details"], indent=2), encoding="utf-8"
         )
         result_doc = {
+            "harness_version": __version__,
             "config": {"agent": agent_block},
             "agent_info": {"name": agent_name, "model_info": {"name": model_name}},
             "timing": {"elapsed_sec": round(elapsed_per_ep, 3)},

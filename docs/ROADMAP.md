@@ -1,58 +1,40 @@
 # pullgym — Technical Audit, Bottlenecks & ML/RL Roadmap
 
-## 1. Current Status Snapshot (`v0.1` Complete)
+## 1. Current Status Snapshot (`v0.1.0` Released → `v0.2.0` In Progress)
 
-### Completed & Verified
+### Completed & Verified (`v0.1.0`)
 * **Core Benchmark & Calibrated Reference Suite (`src/pullgym/`):** 12 experiment families across 4 tiers (`line_fit` through `dead_time`, `correlated_norm`, `no_signal`), five-quantile proper `log_score_reward`, verified on 2,000+ seeds (`pullgym calibrate`, `pullgym probe`), plus secret-seed held-out Harbor export (`pullgym export`).
-* **Milestone 1 — Fast Zero-Docker Multi-Turn Runner (`pullgym run-fast`, Done):** Ephemeral read-only workspaces keeping `truth` and `ref_sigma` strictly in parent memory, stdlib OpenAI-compatible multi-turn `run_python` / `run_bash` loop with `--resume`, `Retry-After` / `IncompleteRead` retries, final-turn budget reminders, and parallel concurrency (`src/pullgym/runner.py`, exact Harbor parity verified in `tests/test_runner.py`).
-* **Milestone 2 — Controlled Distributional RLVR vs. Binary GRPO (`Qwen3-8B`, Done):** Two controlled 2-arm GRPO rounds (1,600 evaluated episodes across `calibrated` and `neutral`, documented in [docs/RLVR_RESULTS.md](RLVR_RESULTS.md)):
-  * **ID Calibration Without Width Inflation:** `log_score_r2` (`lr=5e-5, beta=0.01`, 150 steps) reached **100% valid (`120/120`)** on the 8 training families with **`−0.528` mean reward** (vs. `−4.558` base, `−1.738` `binary_r2`) and **exact `1.00` Tier-1 sharpness** (`line_fit=1.00`, `weighted_mean=1.00`, `counting_rate=1.03`).
+* **Fast Zero-Docker Multi-Turn Runner (`pullgym run-fast`):** Ephemeral read-only workspaces keeping `truth` and `ref_sigma` strictly in parent memory, stdlib OpenAI-compatible multi-turn `run_python` / `run_bash` loop with `--resume`, `Retry-After` / `IncompleteRead` retries, turn-budget reminders, and parallel concurrency (`src/pullgym/runner.py`, exact Harbor parity verified in `tests/test_runner.py`).
+* **Controlled Distributional RLVR vs. Binary GRPO (`Qwen3-8B`):** Two controlled 2-arm GRPO rounds (1,600 evaluated episodes across `calibrated` and `neutral`, documented in [docs/RLVR_RESULTS.md](RLVR_RESULTS.md)):
+  * **ID Calibration Without Global Width Inflation:**
+    * `log_score_r2` (`lr=5e-5, beta=0.01`, 150 steps) reached **100% valid (`120/120`)** on the 8 training families, with mean reward `−0.528` (vs. `−4.558` base, `−1.738` `binary_r2`).
+    * Seed-paired against `binary_r2`: Δreward = **`+1.21` [`+0.53`, `+2.02`]** and Δpinball skill = **`+0.58` [`+0.24`, `+1.03`]**, with Δcov68 ≈ 0.
+    * Tier-1 geometric-mean sharpness is `1.00` / `1.00` / `1.56` (`line_fit` / `weighted_mean` / `counting_rate`), against `7.32` on `counting_rate` for `binary_r2`.
   * **Binary RLVR Blindness & Gradient Starvation:** `binary_r2` hit `80%` zero-std batch starvation by step 150 (vs. `5%` for `log_score_r2`) and left `10×` unit bugs (`counting_rate` sharpness `10.04`) and ignored systematics (`voltmeter_gain` `−9.03` vs. `log_score_r2` `−2.28`).
-  * **Partial OOD Transfer & Single-Turn Bottleneck:** `log_score_r2` beat `binary_r2` by `+11.8` pts coverage / `+2.04` reward on paired valid OOD (`n=34`) and lifted `dead_time` cov68 from `0.0% → 33.3%`, while single-turn `enable_thinking=False` schema errors (`53%` OOD valid) remain the main bottleneck for `v0.2` multi-turn RLVR.
-* **Milestone 3 — Commercial & Open Frontier Baselines (`pullgym run-fast`, Done):** Evaluated `deepseek-flash` (full `12 × 15 = 180` eps on both `calibrated` and `neutral`, 360 eps total), `kimi-k3.1-pro` (`n=29` across all 12 families), `qwen3.8-omni-flash` (`n=30`, Tiers 1–2), `qwen/qwen3.8-27b` (`n=18`, Tier 1), and `nemotron-3-ultra-550b` (`n=7`) alongside seed-paired `oracle` and `prior`. Key finding: modern frontier multi-turn agents reach near-oracle calibration on valid episodes even on `neutral` (`deepseek-flash`: `68.0%` cov68, `sharp=1.00`, `rew_v=−0.085`; `kimi-k3.1-pro`: `70.4%` cov68, `sharp=1.00`, `rew_v=+0.023`), with agentic turn-budget over-iteration (`peak_background`, `dead_time`) as the main remaining gap to `oracle`.
-
-### Next Milestones (`v0.1` Release → `v0.2`)
-1. **Tag `v0.1` & Harbor Registry PR:** Publish `v0.1`, add `pullgym` to Harbor's community benchmark registry, and optionally append `Claude` / `GPT` / `Gemini` frontier rows.
-2. **Harder `v0.2` Physics Trap Families:** Because frontier multi-turn agents saturate `v0.1`'s explicit `apparatus_note.md` systematics, introduce harder unprompted/adversarial lab traps (`outliers`, `look_elsewhere`, `unit_mismatch`, uncalibrated drift/blinding) that still break frontier agents.
-3. **Multi-Turn Interactive RLVR (`v0.2`):** Extend `log_score` GRPO to multi-turn execution-feedback rollouts for small open models (`4B–8B`) to close the OOD schema-validity gap (`53% → 95%+`).
+  * **OOD Transfer Not Established:**
+    * On 4 held-out families, `log_score_r2` − `binary_r2` gives Δreward = `+1.55` [`−0.33`, `+3.41`] (`n=100` paired).
+    * On the 34 tasks both answered validly, Δcov68 = `+11.8 ± 10.8` pt (9/5 discordant, p = 0.42), and 18 of those 34 pairs are `dead_time`.
+    * Single-turn runtime/boundary errors (`53%` OOD valid) and one training seed per arm motivate multi-turn RLVR with ≥3 seeds per arm in `v0.2.0`.
+* **Commercial & Open Frontier Baselines (`pullgym run-fast`):** Evaluated `deepseek-flash` (360 eps across `calibrated` and `neutral`), `kimi-k3.1-pro`, `qwen3.8-omni-flash`, `qwen/qwen3.8-27b`, and `nemotron-3-ultra-550b` alongside seed-paired `oracle` and `prior`. **When a frontier agent produces a valid answer, it reproduces the reference analysis task by task.** Against the oracle, `deepseek-flash` has Δrew_v = `+0.01` [`−0.01`, `+0.03`] over 151 paired tasks, with 2 vs 0 discordant at 68%; `kimi-k3.1-pro` and `qwen3.8-27b` have no discordant tasks. v0.1's explicit systematics are saturated for frontier models, and their only remaining loss is answer validity (`deepseek-flash` Δrew_all = `−0.73` [`−1.01`, `−0.47`]).
 
 ---
 
-## 2. Two Upgrades That Add Genuine Technical & ML Novelty
+## 2. Next Milestones (`v0.2.0`)
 
-### Milestone 1: Fast Zero-Docker Worker Mode (`pullgym run-fast`)
-Keep `pullgym export` (Harbor separate-container mode) as the gold-standard untrusted leaderboard runner, and add a lightweight local/Colab runner (`src/pullgym/runner.py`):
-* Materializes only `data/` and `apparatus_note.md` in an ephemeral read-only directory per episode; keeps `truth` and `ref_sigma` exclusively in the parent process memory (never written to disk before subprocess exit).
-* Runs an OpenAI-compatible multi-turn tool loop (`bash` / `python3` with timeout and clean environment) against any endpoint (`vLLM`, DeepSeek, OpenAI, Anthropic) with configurable async concurrency.
-* **Payoff:** Evaluates 300–600 episodes in minutes on a MacBook or Colab GPU and serves directly as the rollout environment for GRPO training.
-
-### Milestone 2: Proper-Scoring-Rule RLVR vs. Binary-Reward Overconfidence
-Almost all current Reinforcement Learning with Verifiable Rewards (RLVR) on math and code optimizes **binary `0/1` correctness rewards**, which rewards confident guessing and degrades epistemic calibration.
-
-`pullgym` enables a controlled, zero-judge RL experiment testing whether **distributional RLVR** teaches calibrated scientific data analysis:
-* **Setup:** Train an open tool-using model (e.g. **Qwen3-4B** with QLoRA via Unsloth + `TRL` `GRPOTrainer` on a single Colab L4/A100 GPU) on **8 training families**, holding out **4 unseen systematic/boundary families** (`dead_time`, `correlated_norm`, `errors_xy`, `no_signal`) strictly for out-of-distribution evaluation.
-* **Controlled ablation (identical base model, tool loop, and episode budget):**
-  1. **Point-Accuracy Binary GRPO:** Reward $R = \mathbb{I}(|q_{50} - \theta| \le k \cdot \sigma_{\text{ref}})$ (plus valid-ordering format check).
-  2. **Proper Distributional GRPO:** Reward $R = \text{log\_score\_reward}(q, \theta, \sigma_{\text{ref}})$ from `src/pullgym/scoring.py#L66-L72`.
-* **Headline Falsifiable Hypothesis:**
-  * Binary RLVR improves central-value accuracy (`q50`) while **shrinking reported intervals or leaving systematic uncertainties ignored** (severe under-coverage on held-out systematics).
-  * Log-Score GRPO induces emergent verification behaviors in generated Python code (explicitly reading `apparatus_note.md` certificates, propagating nuisance/calibration errors, running Monte Carlo / bootstrap checks, and reporting asymmetric intervals near physical boundaries), moving held-out 68%/95% coverage toward nominal without blowing up sharpness.
+0. **Phase 1, harness and statistics: done in `0.2.0.dev0`.**
+   * Single-source `__version__`, with `harness_version` in every `result.json`.
+   * pandas and matplotlib are core dependencies.
+   * `probe` scores the exact reference quantiles, with shape-preserving width probes and a `gaussian approx` diagnostic.
+   * The runner reports `turn k/N` and a schema-only `answer_status` after every tool call, warns 3 turns before the end and on the final turn, and no longer ends an episode on an invalid `answer.json`.
+   * With several quantities, `reward.json` averages the calibration keys.
+   * `pullgym report` has `rew_v`/`rew_all`, `pt_acc`, Wilson CIs, geometric-mean sharpness, clipped pinball skill, `--by tier`, `--paired`, `--baseline` (paired bootstrap and McNemar), a harness-version warning, `--format md|latex|json`, and accepts several paths.
+1. **Tier-5 Implicit Metrology & Unprompted Diagnostic Families:** Expand from 12 to 16 families by adding unprompted residual diagnostics (`outliers`, `unmodeled_drift`, `look_elsewhere`) and BIPM/GUM datasheet & cross-unit conventions (`datasheet_metrology`).
+2. **Uniform Frontier Leaderboard & Harbor Registry PR:** Evaluate cross-lab frontier models (`Claude`, `GPT`, `Gemini`, `DeepSeek` chat vs. reasoner, `Qwen3-Max`) at uniform `n = 25` seeds/family with paired CIs and `pinball_skill`, and submit `pullgym` to Harbor's community benchmark registry.
+3. **Multi-Turn Execution-Feedback GRPO:** Extend controlled `base` vs. `binary` vs. `log_score` GRPO to multi-turn `run_python` rollouts (`Dr. GRPO` with turn-level `action_mask`) to eliminate OOD runtime traceback fragility on 8B open models.
 
 ---
 
-## 3. Low-Cost Evaluation & Compute Plan (~$8–$18 Total API Spend)
-
-| Step | Status | Scope (`12 families × 25 seeds = 300 eps/variant`; `calibrated` + `neutral`) | Compute / API Strategy | Est. Spend |
-| :--- | :--- | :--- | :--- | :--- |
-| **1. `pullgym run-fast`** | **Done** | Lightweight isolated subprocess runner with exact Harbor parity & `--resume`. | Local MacBook | **$0** |
-| **2. `Qwen3-8B` Base + Binary vs. Log-Score GRPO** | **Done** | Round 1 (`KL=0.011`) + Round 2 (`KL=0.076`, 150 steps) on 8 families; 1,600 episodes evaluated across ID & OOD (`docs/RLVR_RESULTS.md`). | RTX 4090 48 GB | **Done** |
-| **3. Commercial Frontier Leaderboard** | **Done** | Evaluated `deepseek-flash` (`calibrated` + `neutral`, 360 eps), `kimi-k3.1-pro`, `qwen3.8-omni-flash`, `qwen/qwen3.8-27b`, `nemotron-3-ultra-550b`, plus seed-paired `oracle`/`prior`. | DeepSeek (~¥11 CNY) + Aliyun/Groq/OR ($0) | **~$1.50** |
-| **4. `v0.1` Release & Harbor PR** | **Next** | Tag `v0.1` on GitHub/PyPI, PR to Harbor registry, and publish technical writeup / workshop paper. | Local | **$0** |
-| **5. `v0.2` Harder Traps & Multi-Turn RLVR** | **Next** | Harder unprompted physics traps (`outliers`, `look_elsewhere`, `unit_mismatch`) that break frontier agents + multi-turn execution-feedback GRPO for 8B open models. | GPU VM / Colab | TBD |
-
----
-
-## 4. Independent Positioning & Reward-Hacking Audit Checklist
+## 3. Positioning & Reward-Hacking Audit Checklist
 
 ### Framing & Prior-Art Guardrail (Critical for Paper / Blogpost)
 * **Do NOT claim to be the first to put proper scoring rules into GRPO.** 2025–2026 papers (**RLCR**, **CAPO**, Brier-score GRPO) already optimize proper scoring rules inside GRPO for *scalar verbalized confidence* ("I am 80% confident my final math/QA token is right").

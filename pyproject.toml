@@ -1,6 +1,6 @@
 [project]
 name = "pullgym"
-version = "0.1.0"
+version = "0.2.0.dev0"
 description = "An agent environment that scores honest error bars on simulated physics measurements."
 readme = "README.md"
 license = "MIT"
@@ -9,6 +9,10 @@ requires-python = ">=3.10"
 dependencies = [
     "numpy>=1.24",
     "scipy>=1.10",
+    # Agents are told pandas and matplotlib are available (as in the Harbor
+    # agent image), and run-fast executes their code with this interpreter.
+    "pandas>=2.0",
+    "matplotlib>=3.7",
 ]
 classifiers = [
     "Programming Language :: Python :: 3",

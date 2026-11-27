@@ -445,3 +445,107 @@ def test_final_turn_reminder_injected_before_cutoff(tmp_path):
     run_episode(fam, 0, "dev", "calibrated", agent, tmp_path / "budget_job")
     assert len(seen_tool_contents) == 1
     assert "Final turn next" in seen_tool_contents[0].get("note", "")
+
+
+def test_agent_python_has_advertised_libraries(tmp_path):
+    # The prompt promises numpy, scipy, pandas and matplotlib; run-fast executes
+    # agent code with this interpreter, so they must be core dependencies.
+    from pullgym.runner import EpisodeWorkspace
+
+    ws = EpisodeWorkspace(root=tmp_path, data_dir=tmp_path, answer_path=tmp_path / "a.json")
+    out = ws.run_python("import numpy, scipy, pandas, matplotlib\nprint('ok')")
+    assert out["exit_code"] == 0, out["stderr"]
+    assert out["stdout"].strip() == "ok"
+
+
+def test_answer_status_is_schema_only(tmp_path):
+    from pullgym.runner import answer_status
+
+    p = tmp_path / "answer.json"
+    assert answer_status(p, ["x"]) == "missing"
+    p.write_text("{not json")
+    assert answer_status(p, ["x"]).startswith("invalid: answer file is not valid JSON")
+    p.write_text(json.dumps({"x": {"q025": 0, "q16": 0, "q50": 1, "q84": 2, "q975": 3}}))
+    assert answer_status(p, ["x"]) == "invalid: x: q025 must be strictly less than q16"
+    p.write_text(json.dumps({"x": {"q025": 0, "q16": 1, "q50": 2, "q84": 3, "q975": 4}}))
+    assert answer_status(p, ["x"]) == "valid"
+
+
+def _code_answer(qs):
+    keys = ("q025", "q16", "q50", "q84", "q975")
+    ans = {"velocity": dict(zip(keys, qs))}
+    return (
+        "```python\nimport json, os\nos.makedirs('artifacts', exist_ok=True)\n"
+        f"json.dump({ans!r}, open('artifacts/answer.json', 'w'))\n```"
+    )
+
+
+def test_tools_mode_code_block_with_invalid_answer_does_not_end_episode(tmp_path):
+    """A tools-mode model writing an invalid answer via a code block can fix it."""
+    fam = get_family("line_fit")
+    ep = fam.episode(0)
+    ref = fam.reference_analysis(ep.files)["velocity"]
+    feedbacks = []
+
+    def fake_chat(payload):
+        users = [m for m in payload["messages"] if m["role"] == "user"]
+        if len(users) > 1:
+            feedbacks.append(users[-1]["content"])
+        n_asst = sum(1 for m in payload["messages"] if m["role"] == "assistant")
+        if n_asst == 0:  # ties at the boundary: q025 == q16
+            bad = [ref[0], ref[0], ref[2], ref[3], ref[4]]
+            return {"choices": [{"message": {"role": "assistant", "content": _code_answer(bad)}}]}
+        if n_asst == 1:
+            return {"choices": [{"message": {"role": "assistant", "content": _code_answer(ref)}}]}
+        raise AssertionError("episode should end once the answer is valid")
+
+    agent = OpenAICompatibleAgent(model="mock/fix", chat_fn=fake_chat, max_turns=6)
+    oc = run_episode(fam, 0, "dev", "calibrated", agent, tmp_path / "fix_job")
+    assert oc.error is None
+    assert oc.rewards["valid"] == 1.0
+    assert len(feedbacks) == 1
+    assert "turn: 1/6" in feedbacks[0]
+    assert "answer_status (`artifacts/answer.json`): invalid: velocity: q025 must be strictly less than q16" in feedbacks[0]
+    log = (oc.trial_dir / "trial.log").read_text()
+    assert "answer_status=invalid" in log and "answer_status=valid" in log
+    result = json.loads((oc.trial_dir / "result.json").read_text())
+    from pullgym import __version__
+
+    assert result["harness_version"] == __version__
+
+
+def test_tool_observations_carry_turn_and_status_and_early_warning(tmp_path):
+    fam = get_family("line_fit")
+    seen = []
+
+    def fake_chat(payload):
+        tool_msgs = [m for m in payload["messages"] if m["role"] == "tool"]
+        if tool_msgs:
+            seen.append(json.loads(tool_msgs[-1]["content"]))
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": f"tc_{len(tool_msgs)}",
+                                "type": "function",
+                                "function": {"name": "run_bash", "arguments": json.dumps({"command": "true"})},
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+
+    agent = OpenAICompatibleAgent(model="mock/stall", chat_fn=fake_chat, max_turns=6)
+    oc = run_episode(fam, 0, "dev", "calibrated", agent, tmp_path / "stall_job")
+    assert oc.rewards["valid"] == 0.0
+    assert [s["turn"] for s in seen] == ["1/6", "2/6", "3/6", "4/6", "5/6"]
+    assert all(s["answer_status"] == "missing" for s in seen)
+    notes = {s["turn"]: s.get("note", "") for s in seen}
+    assert "3 turns left" in notes["3/6"]
+    assert "Final turn next" in notes["5/6"]
+    assert notes["1/6"] == notes["2/6"] == notes["4/6"] == ""

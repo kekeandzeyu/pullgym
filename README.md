@@ -8,7 +8,7 @@ The question it answers:
 
 > When an agent reports a 68% interval on a measured quantity, how often does the true value fall inside it? A calibrated analyst is right 68% of the time.
 
-> **Status: v0.1 ready for release.** Twelve experiment families across four tiers, the scorer, the Harbor exporter, the fast runner and the reporting tool work, and every family's reference analysis is verified calibrated. Multi-turn commercial/open frontier baselines (`deepseek-flash` across `calibrated` and `neutral`, `kimi-k3.1-pro`, `qwen3.8-omni-flash`, `qwen/qwen3.8-27b`, and `nemotron-3-ultra-550b`) and controlled `Qwen3-8B` GRPO results (`log_score` vs. `binary` across two KL regimes, 1,600 evaluated episodes in [docs/RLVR_RESULTS.md](docs/RLVR_RESULTS.md)) are published below. Interfaces may change before v0.2.
+> **Status: v0.1.0 released; v0.2.0 in development (`0.2.0.dev0`).** Twelve experiment families across four tiers, the scorer, the Harbor exporter, the fast runner and the reporting tool work, and every family's reference analysis is verified calibrated. Multi-turn commercial/open frontier baselines (`deepseek-flash` across `calibrated` and `neutral`, `kimi-k3.1-pro`, `qwen3.8-omni-flash`, `qwen/qwen3.8-27b`, and `nemotron-3-ultra-550b`) and controlled `Qwen3-8B` GRPO results (`log_score` vs. `binary` across two KL regimes, 1,600 evaluated episodes in [docs/RLVR_RESULTS.md](docs/RLVR_RESULTS.md)) are published below. The v0.1 results were produced with harness `0.1.0`. v0.2 changes the multi-turn runner's observations, so v0.1 and v0.2 runs must not be mixed in one table (`pullgym report` warns when they are). Interfaces may change before v0.2.
 
 ## Why
 
@@ -41,6 +41,15 @@ Then run an agent on the tasks with [Harbor](https://www.harborframework.com/) a
 harbor run -p tasks -a <agent> -m <model> -o jobs
 uv run pullgym report jobs               # coverage, pull and sharpness per model and family
 ```
+
+`pullgym report` accepts several job directories and these options:
+
+- `--by model,tier,variant`: grouping keys (`model`, `agent`, `family`, `tier`, `variant`, `split`, `harness_version`).
+- `--paired`: restrict the table to tasks that every model answered validly.
+- `--baseline <model>`: add seed-paired differences of every other model against `<model>`. The table shows paired bootstrap 95% CIs on reward, McNemar tests on coverage, and pinball skill.
+- `--format text|md|latex|json`: output format.
+
+Because every model sees the same seeds, paired differences are much tighter than comparing two unpaired means. Use them for any claim that one model beats another.
 
 ## How an episode works
 
@@ -99,7 +108,12 @@ To score the log density, the five quantiles are read as a full distribution: th
 | | | `dead_time` | A true count rate behind a counter whose dead time is uncertain, giving an asymmetric interval |
 | 4. Traps | The honest answer is a limit | `no_signal` | The strength of a faint line that is often indistinguishable from zero |
 
-Planned beyond v0.1: outliers; many places to look for a peak (look-elsewhere); inconsistent units in the apparatus note.
+Planned for v0.2, as a new Tier 5 of implicit metrology and unprompted diagnostics:
+
+- `outliers`: unannounced glitches in the data.
+- `unmodeled_drift`: a smooth baseline drift that only the residuals reveal.
+- `look_elsewhere`: a peak whose location is unknown, so a trials factor applies.
+- `datasheet_metrology`: GUM datasheet conventions (`k = 2` expanded uncertainties, rectangular limits, small-N Type A scatter) and mV/µA/Ω unit conversions. It subsumes the earlier `unit_mismatch` idea.
 
 ### What the traps catch
 
@@ -139,7 +153,15 @@ Every family ships a reference analysis written by a human. Before any model is 
 
 \* A fluctuation in this seed range: on 20,000 seeds, `counting_rate` gives 68.0% ± 0.3% and 95.1% ± 0.2%. Its reference is a Bayesian posterior whose coverage is essentially exact by construction.
 
-The slow test suite (`pytest -m slow`) repeats this check with 400 seeds per family. `pullgym probe` confirms that in every family the reference analysis has a higher mean reward than intervals 0.1×, 0.5×, 2× or 10× its width, a centre shifted by 1σ, or the prior alone.
+The slow test suite (`pytest -m slow`) repeats this check with 400 seeds per family. `pullgym probe` confirms that in every family the reference analysis has a higher mean reward than any of these degenerate strategies:
+
+- its own quantiles scaled to 0.1×, 0.5×, 2× or 10× their width about the median, which keeps any asymmetry;
+- its quantiles shifted by 1σ;
+- the prior alone.
+
+The probe also reports a `gaussian approx` diagnostic: a symmetric Gaussian with the reference's centre and 68% width. It measures how much a Gaussian summary loses. On `low_count_rate` and `no_signal`, where the exact posterior is skewed by the physical boundary, it costs 0.08–0.10 reward. Elsewhere it ties with the reference.
+
+**Small samples.** At 15 seeds per family, the calibrated reference itself ranges from 53% to 87% 68%-coverage across families, and reaches 90.6% 95%-coverage over all 180 episodes of dev seeds 0–14. Per-family coverage at that size is mostly seed noise. Compare models with `pullgym report --baseline`, not by reading off per-family coverage.
 
 ### Adding a family
 
@@ -199,9 +221,10 @@ Evaluated via multi-turn `pullgym run-fast` (`run_python` / `run_bash` in `tools
 | `prior` *(uninformative)* | Local prior (12 fam × 15) | `calibrated` | 180 | 100% | 62.8% | 98.9% | 0.91 | 38.19 | −3.046 | −3.046 |
 
 Key frontier findings:
-- **Multi-turn frontier agents reach near-oracle calibration on `v0.1` — even on `neutral`:** On valid episodes, `deepseek-flash` matches the human `oracle` on both `calibrated` (`66.2%` cov68, `sharp=1.00`, `rew_v=−0.127`) and `neutral` (`68.0%` cov68, `sharp=1.00`, `rew_v=−0.085`), including the 4 hardest OOD systematic/boundary families (`n=60`: `neutral` `60.9%` cov68 / `93.5%` cov95 / `rew_v=−0.101` vs. `oracle` `60.0%` / `91.7%` / `−0.109`), and `kimi-k3.1-pro` achieves `70.4%` cov68 / `92.6%` cov95 / `rew_v=+0.023` (`93%` valid) across all 12 families.
+- **On v0.1, a valid frontier answer is task-for-task the reference analysis.** Seed-paired against the oracle (`pullgym report runs/frontier/* --baseline oracle`), `deepseek-flash` (`calibrated`, 151 paired valid tasks) differs by Δrew_v = `+0.01` [`−0.01`, `+0.03`]. Only 2 tasks are covered at 68% by one side and not the other. `kimi-k3.1-pro` (27 pairs) and `qwen/qwen3.8-27b` (18 pairs) have no such tasks at all. The headline coverages (`66–70%` cov68, `~91%` cov95) are therefore the oracle's own seed noise on these 15 seeds per family, not model miscalibration. v0.1's explicit systematics are saturated for frontier agents, which is the motivation for Tier 5.
+- **The whole remaining gap is answer validity.** `deepseek-flash`'s all-episode reward is `−0.73` [`−1.01`, `−0.47`] below the oracle, entirely from the `16%` of episodes without a valid answer.
 - **Agentic turn-budget over-iteration, not statistical error, drives `deepseek-flash`'s remaining gap to `oracle`:** Across all 360 `deepseek-flash` episodes, there were **zero** malformed-JSON answers; invalid episodes (`peak_background` `40–47%` valid, `dead_time` `60–67%` valid) were caused by exhausting `max_turns=20` on extra diagnostic checks before writing `answer.json`. In contrast, `code` mode (`kimi-k3.1-pro`, `qwen3.8-omni-flash`) bundles exploratory analysis into 4–6 Python blocks and avoids turn-limit cutoffs. (`pullgym run-fast` now injects a final-turn reminder when `answer.json` is not yet written.)
-- **Sharp capability gap vs. 8B models motivates both RLVR distillation and harder `v0.2` physics traps:** Whereas frontier multi-turn agents already parse `v0.1`'s explicit `apparatus_note.md` systematics cleanly, single-turn `Qwen3-8B` collapses to `38.1%` cov68 (`rew_v=−6.721`), making `v0.1` an effective RLVR benchmark for small open models while pointing directly to harder `v0.2` traps (`look_elsewhere`, `outliers`, `unit_mismatch`, unprompted systematics).
+- **Sharp capability gap vs. 8B models motivates both RLVR distillation and harder `v0.2` physics traps:** Whereas frontier multi-turn agents already parse `v0.1`'s explicit `apparatus_note.md` systematics cleanly, single-turn `Qwen3-8B` collapses to `38.1%` cov68 (`rew_v=−6.721`), making `v0.1` an effective RLVR benchmark for small open models while pointing directly to harder `v0.2` traps (`outliers`, `unmodeled_drift`, `look_elsewhere`, `datasheet_metrology`).
 
 ### Controlled Distributional RLVR vs. Binary GRPO (`Qwen3-8B`)
 
@@ -229,22 +252,43 @@ Controlled GRPO results on `Qwen3-8B` (4-bit QLoRA, 150 steps, `enable_thinking=
 
 ![Distributional RLVR vs. Binary GRPO Comparison](docs/assets/rlvr_comparison.png)
 
-Key findings (full tables, Round 1 vs. Round 2 comparison, and side-by-side script diffs in [docs/RLVR_RESULTS.md](docs/RLVR_RESULTS.md)):
-- **Proper log-score RLVR closes the ID calibration gap without lazy Tier-1 width inflation:** `log_score_r2` hit **100% valid (120/120)** across all 8 training families with mean reward **`−0.528`** (vs. `−4.558` base and `−1.738` binary_r2), **exact `1.00` Tier-1 sharpness** (`line_fit=1.00`, `weighted_mean=1.00`, `counting_rate=1.03`), and **+4.26 reward** over `binary_r2` on ID Tier-3 systematics (`−1.336` vs. `−5.591`, including `+6.75` on `voltmeter_gain`).
-- **Binary RLVR stays blind to error-bar bugs and suffers gradient starvation:** Even when `binary_r2` reaches `98–100%` valid and strong point accuracy, it leaves `10×` unit errors in `counting_rate` error bars (`sharpness=10.04`), ignores `voltmeter_gain` calibration uncertainty (`sharpness=0.30`, `reward=−9.03`), and hits `frac_reward_zero_std = 0.80` (vs. `0.013` mean for `log_score_r2`).
-- **OOD systematic transfer & single-turn schema bottleneck:** On unseen OOD families, `log_score_r2` beats `binary_r2` by **+11.8 pts cov68 (`35.3% ± 8.2%` vs. `23.5% ± 7.3%`) / +11.8 pts cov95 / +2.04 reward** on the head-to-head paired valid subset (`n=34`), jumps `dead_time` from **`0.0% → 33.3%` cov68** (deriving an iterative dead-time correction + quadrature uncertainty propagation in code), and achieves the best `neutral` OOD pull width (`4.98`) and all-episode reward (`−5.801`) of all five models. On unpaired `calibrated` OOD (`n=100`), `cov68` improves (`33.9% → 39.6%`), while single-turn `enable_thinking=False` schema errors on unseen CSV layouts (`errors_xy` `32%` valid, `no_signal` `40%` valid) hold unpaired `valid%` (`53.0%` vs. `56.0%` base) and valid-only reward (`−10.065` vs. `−9.286` base) back—motivating multi-turn execution-feedback RL next.
+Key findings, as seed-paired differences with paired-bootstrap 95% CIs (full tables, Round 1 vs. Round 2, and script diffs in [docs/RLVR_RESULTS.md](docs/RLVR_RESULTS.md)). Every result is from one training run per arm, so run-to-run variance is not yet measured.
+
+- **In distribution, log-score RLVR beats binary RLVR, and the gain is in the error bars.**
+  - Over the 8 training families (`n=120` paired tasks), `log_score_r2` − `binary_r2` gives Δreward = `+1.21` [`+0.53`, `+2.02`].
+  - Pinball skill, a proper score that was *not* optimized, also improves: `+0.58` [`+0.24`, `+1.03`].
+  - Δcov68 is `−0.8 ± 2.8` pt (5 vs 6 tasks covered by only one model). The gain therefore comes from interval width and tails, not from hitting the 68% target more often, as expected from a proper score.
+  - Against the base model: Δreward = `+4.03` [`+3.06`, `+5.10`], and Δcov68 = `+12.9` pt (McNemar p = 0.035).
+- **Binary RLVR is blind to error-bar bugs and runs out of learning signal.**
+  - At `98–100%` valid, `binary_r2` keeps a 10× unit error in `counting_rate` error bars (geometric-mean sharpness `7.32`) and ignores the `voltmeter_gain` certificate (`reward = −9.03`).
+  - By step 150, `80%` of its batches give all 8 rollouts the same reward. For `log_score_r2` that fraction averages `1.3%` and ends at `5%`.
+- **Tier-1 width-inflation audit:** no global inflation. `log_score_r2`'s geometric-mean sharpness is `1.00` on `line_fit` and `weighted_mean`. On `counting_rate` it is `1.56` (median `1.03`), against `7.32` for `binary_r2`. Log score removed the 10× unit bug in most `counting_rate` episodes, but not all.
+- **Out-of-distribution transfer is not established.**
+  - On the 4 held-out families (`calibrated`, `n=100` paired), `log_score_r2` − `binary_r2` gives Δreward = `+1.55` [`−0.33`, `+3.41`].
+  - On the `34` tasks both answered validly, Δcov68 = `+11.8 ± 10.8` pt (9 vs 5 discordant, p = 0.42), and 18 of those 34 pairs are `dead_time`.
+  - Against the base model, Δreward = `−0.38` [`−2.45`, `+1.77`].
+  - On `neutral` OOD, Δcov68 against `binary_r2` is `−12.5 ± 9.6` pt.
+  - Single-turn `enable_thinking=False` runtime errors on unseen CSV layouts keep OOD validity at `53%` (`errors_xy` `32%`, `no_signal` `40%`). Multi-turn execution feedback, several training seeds and larger `n` (v0.2 Phase 5) are needed before claiming transfer.
 
 ### Next steps (`v0.1` → `v0.2`)
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) for the updated roadmap:
 
-1. **Tag `v0.1` & expand frontier coverage:** Submit `pullgym` to Harbor's community benchmark registry and add `Claude` / `GPT` / `Gemini` rows alongside `deepseek-flash` and `kimi-k3.1-pro`.
-2. **Harder `v0.2` physics trap families:** Since frontier multi-turn agents already approach oracle calibration on `v0.1`'s explicit systematics, add harder unprompted/adversarial lab traps: `outliers` (non-Gaussian cosmic-ray glitches), `look_elsewhere` (trials-factor peak scanning), and `unit_mismatch` (subtle unit discrepancies between CSVs and lab logbooks).
-3. **Multi-turn interactive RLVR (`v0.2`):** Extend `log_score` GRPO from single-turn script synthesis to multi-turn `run_python` / `run_bash` rollouts (and thinking-enabled models) to lift small-model OOD schema validity above `95%`.
+1. **Harness and statistics (Phase 1, done in `0.2.0.dev0`):**
+   - The runner shows a schema-only `answer_status` and the turn count after every tool call, and warns when the turn budget is nearly spent.
+   - It no longer ends an episode as soon as an *invalid* `answer.json` exists.
+   - Results record `harness_version`.
+   - `pullgym report` has paired CIs, Wilson intervals, pinball skill and md/LaTeX output.
+   - `probe` uses the reference's exact quantiles.
+   - pandas and matplotlib are now core dependencies.
+2. **Harder Tier-5 physics trap families:** frontier multi-turn agents reproduce the reference task by task on v0.1. v0.2 adds `outliers`, `unmodeled_drift`, `look_elsewhere` and `datasheet_metrology`, with no hints about glitches or drift in the apparatus note.
+3. **Uniform frontier leaderboard:** `Claude`, `GPT`, `Gemini`, `DeepSeek` chat vs. reasoner and `Qwen3-Max` under harness `0.2.0`, at `n = 25` seeds per family on all 16 families. Report it with `--baseline oracle`, add a secret `test`-split anchor check, and submit to Harbor's community registry.
+4. **Multi-turn RLVR:** three arms (`base`, `binary`, `log_score`) with execution feedback, at least 3 training seeds per arm and paired CIs, to raise small-model OOD validity above `95%` and test transfer properly.
 
 ### Known limitations & RL audit warnings
-- **Distinguishing systematic modeling from lazy width inflation:** Under `log_score_reward`, error bars 10× too small cost about `−12` while error bars 10× too wide cost about `−1.8`. A policy that blindly multiplies every statistical error bar by `5×–8×` can raise OOD coverage without reading `apparatus_note.md`. Every RL evaluation must therefore report **Tier-1 clean sharpness (`line_fit`, `weighted_mean`) alongside OOD Tier-3/4 coverage**, plus code-level inspection of whether trained scripts actually parse apparatus systematics.
+- **Distinguishing systematic modeling from lazy width inflation:** Under `log_score_reward`, error bars 10× too small cost about `−12` while error bars 10× too wide cost about `−1.8`. A policy that blindly multiplies every statistical error bar by `5×–8×` can raise OOD coverage without reading `apparatus_note.md`. Every RL evaluation must therefore report **Tier-1 clean sharpness (`line_fit`, `weighted_mean`, `counting_rate`) alongside OOD Tier-3/4 coverage**. Use the geometric mean (`sharp gm` in `pullgym report`), because the median is `1.00` for every model, the base model included, and cannot detect inflation in a minority of episodes. Also inspect the trained scripts to check that they actually parse the apparatus systematics.
 - **Valid-rate shifts vs. missing-answer fallback:** During GRPO training (`src/pullgym/rl.py`), invalid/crashing completions receive `invalid_penalty = −12.0 < floor = −10.0` so crashing never beats submitting quantiles. In official episode reporting (`scoring.py`), missing/malformed answers receive `prior − 1` (`~ −3`), which is milder than a `−20` overconfident miss—so tables must report **`valid%`**, **valid-only coverage/sharpness**, and **all-episode mean reward** together to avoid confounding format improvements with calibration improvements.
+- **Sample size and pairing:** At 15 seeds per family, a perfectly calibrated analysis shows per-family cov68 anywhere from `53%` to `87%`. Model comparisons must therefore be seed-paired (`pullgym report --baseline`). Valid-only comparisons must also be restricted to tasks both models answered validly (`--paired`), because invalid answers concentrate in the hardest families.
 - **Single-turn RL vs. multi-turn tool loops:** `scripts/train_grpo.py` trains single-turn Python synthesis from apparatus notes and CSV previews; testing transfer to multi-turn interactive `pullgym run-fast` / Harbor agents is tracked separately.
 
 ## Development

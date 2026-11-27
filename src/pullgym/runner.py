@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
-from pullgym import scoring
+from pullgym import __version__, scoring
 from pullgym.export import VARIANTS, build_truth_doc, heldout_seeds, instruction, task_id
 from pullgym.families import Family
 
@@ -131,6 +131,22 @@ def _truncate(text: str, limit: int = MAX_TOOL_OUTPUT_CHARS) -> str:
     half = limit // 2
     omitted = len(text) - limit
     return f"{text[:half]}\n... [truncated {omitted} chars] ...\n{text[-half:]}"
+
+
+def answer_status(answer_path: Path, quantities: list[str]) -> str:
+    """Public-schema status of the answer file: "missing", "valid" or "invalid: ...".
+
+    Uses only scoring.load_answer (JSON syntax, required keys, finite numbers,
+    strictly increasing quantiles). It never sees the truth, the reference or
+    the prior, so it is safe to show to the agent mid-episode.
+    """
+    if not answer_path.exists() and not answer_path.is_symlink():
+        return "missing"
+    try:
+        scoring.load_answer(str(answer_path), quantities)
+    except scoring.AnswerError as e:
+        return f"invalid: {e}"
+    return "valid"
 
 
 def _set_readonly(data_dir: Path) -> None:
@@ -314,7 +330,7 @@ def openai_http_chat(
         body = json.dumps(payload).encode("utf-8")
         headers = {
             "Content-Type": "application/json",
-            "User-Agent": "pullgym/0.1",
+            "User-Agent": f"pullgym/{__version__}",
         }
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
@@ -430,6 +446,10 @@ class OpenAICompatibleAgent:
             {"role": "user", "content": prompt},
         ]
         result = AgentRunResult(transcript=list(messages))
+        names = list(family.quantities)
+
+        def status() -> str:
+            return answer_status(workspace.answer_path, names)
 
         for turn in range(1, self.max_turns + 1):
             payload: dict[str, Any] = {
@@ -470,15 +490,13 @@ class OpenAICompatibleAgent:
                     fn = tc.get("function") or {}
                     tname = fn.get("name", "")
                     out = self._execute_tool(tname, fn.get("arguments", "{}"), workspace)
-                    if (
-                        idx_tc == len(tool_calls) - 1
-                        and turn == self.max_turns - 1
-                        and not workspace.answer_path.is_file()
-                    ):
-                        out["note"] = (
-                            f"Final turn next ({self.max_turns}/{self.max_turns}): "
-                            f"write and verify `{FAST_ANSWER_PATH}` now."
-                        )
+                    if idx_tc == len(tool_calls) - 1:
+                        st = status()
+                        out["turn"] = f"{turn}/{self.max_turns}"
+                        out["answer_status"] = st
+                        note = self._budget_note(turn, st)
+                        if note:
+                            out["note"] = note
                     result.log_lines.append(
                         f"turn {turn}: tool={tname} exit={out.get('exit_code', 'err')}"
                     )
@@ -495,38 +513,54 @@ class OpenAICompatibleAgent:
             # models in 'tools' mode that emit ```python without tool_calls).
             content = assistant_msg["content"]
             blocks = _PYTHON_FENCE_RE.findall(content)
-            if blocks and (self.tool_mode == "code" or not workspace.answer_path.is_file()):
+            if blocks and (self.tool_mode == "code" or status() != "valid"):
                 out = workspace.run_python(blocks[-1])
+                st = status()
                 result.log_lines.append(
-                    f"turn {turn}: code_block exit={out.get('exit_code')} "
-                    f"answer_exists={workspace.answer_path.is_file()}"
+                    f"turn {turn}: code_block exit={out.get('exit_code')} answer_status={st}"
                 )
-                if workspace.answer_path.is_file() and self.tool_mode == "tools":
+                # A tools-mode model that falls back to a code block is done once
+                # its answer validates; an invalid answer gets a chance to be fixed.
+                if st == "valid" and self.tool_mode == "tools":
                     break
                 feedback = (
                     f"Execution result (exit_code={out['exit_code']}, "
                     f"timed_out={out['timed_out']}):\n"
                     f"STDOUT:\n{out['stdout']}\n"
                     f"STDERR:\n{out['stderr']}\n"
-                    f"`{FAST_ANSWER_PATH}` exists: {workspace.answer_path.is_file()}"
+                    f"turn: {turn}/{self.max_turns}\n"
+                    f"answer_status (`{FAST_ANSWER_PATH}`): {st}"
                 )
-                if turn == self.max_turns - 1 and not workspace.answer_path.is_file():
-                    feedback += (
-                        f"\nNote: Final turn next ({self.max_turns}/{self.max_turns}) — "
-                        f"write and verify `{FAST_ANSWER_PATH}` now."
-                    )
+                note = self._budget_note(turn, st)
+                if note:
+                    feedback += f"\nNote: {note}"
                 fb_msg = {"role": "user", "content": feedback}
                 messages.append(fb_msg)
                 result.transcript.append(fb_msg)
                 continue
 
             # No tool calls and no python block to execute -> done.
-            result.log_lines.append(
-                f"turn {turn}: finished (answer_exists={workspace.answer_path.is_file()})"
-            )
+            result.log_lines.append(f"turn {turn}: finished (answer_status={status()})")
             break
 
         return result
+
+    def _budget_note(self, turn: int, st: str) -> str | None:
+        """Turn-budget warning, shown only while the answer is not yet valid."""
+        if st == "valid":
+            return None
+        left = self.max_turns - turn
+        if left == 1:
+            return (
+                f"Final turn next ({self.max_turns}/{self.max_turns}): "
+                f"write and verify `{FAST_ANSWER_PATH}` now."
+            )
+        if left == 3 and self.max_turns >= 6:
+            return (
+                f"{left} turns left: write a valid `{FAST_ANSWER_PATH}` soon; "
+                "you can refine it afterwards."
+            )
+        return None
 
 
 @dataclass
@@ -649,6 +683,7 @@ def run_episode(
         json.dumps(scored["details"], indent=2), encoding="utf-8"
     )
     result_doc = {
+        "harness_version": __version__,
         "config": {"agent": agent_block},
         "agent_info": {
             "name": agent.agent_name,

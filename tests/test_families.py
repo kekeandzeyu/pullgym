@@ -1,7 +1,7 @@
 import pytest
 
 from pullgym.families import FAMILIES
-from pullgym.stats import probe, reference_episodes, summarize
+from pullgym.stats import PROBE_DIAGNOSTICS, probe, reference_episodes, summarize
 
 FAMS = list(FAMILIES.values())
 
@@ -49,5 +49,22 @@ def test_reference_analysis_is_calibrated(fam):
 @pytest.mark.parametrize("fam", FAMS, ids=lambda f: f.name)
 def test_reference_beats_degenerate_strategies(fam):
     res = probe(fam, range(20_000, 20_200))
-    best = max(res, key=lambda k: res[k]["reward_mean"])
+    degenerate = [k for k in res if k not in PROBE_DIAGNOSTICS]
+    best = max(degenerate, key=lambda k: res[k]["reward_mean"])
     assert best == "reference"
+
+
+def test_probe_scores_the_exact_reference_quantiles():
+    """The probe's "reference" must be the family's own (possibly skewed) quantiles."""
+    from pullgym.families import get_family
+    from pullgym.stats import PROBE_STRATEGIES
+
+    fam = get_family("dead_time")  # asymmetric reference interval
+    seeds = range(3)
+    res = probe(fam, seeds)
+    ref = summarize(reference_episodes(fam, seeds))
+    assert res["reference"]["reward_mean"] == pytest.approx(ref["reward_mean"], rel=1e-12)
+    q = [1.0, 2.0, 3.0, 5.0, 9.0]
+    assert PROBE_STRATEGIES["reference"](q, 1.0, None) == q
+    assert PROBE_STRATEGIES["width x2"](q, 1.0, None) == [-1.0, 1.0, 3.0, 7.0, 15.0]
+    assert res["gaussian approx"]["reward_mean"] != res["reference"]["reward_mean"]
