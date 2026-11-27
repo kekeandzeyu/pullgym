@@ -126,11 +126,100 @@ Bold marks intervals that exclude zero. Conclusions:
 1. **In distribution, `log_score` beats `binary`, and the gain is in interval width and tails.**
    - The reward and pinball-skill gains are significant. Pinball skill is a proper score that GRPO did not optimize, so the reward gain is not an artefact of the piecewise-Gaussian log-density.
    - Coverage is unchanged, which is what a proper score predicts once both policies centre their intervals equally well.
-2. **OOD transfer is not significant in any comparison.**
+2. **OOD transfer is not significant in any comparison with one evaluation draw per task.** §6.2 revises this: with two draws per task, `log_score_r2` beats `binary_r2` OOD, but not the base model.
    - The `+11.8` pt paired-valid cov68 gain in §4 rests on 9 vs 5 discordant tasks, and 18 of its 34 pairs are `dead_time`.
    - On `neutral` OOD the coverage difference has the opposite sign.
    - The `dead_time` code-level example in the audits below is a real qualitative change, but one family's anecdote is not evidence of transfer.
 3. **One training run per arm.** Run-to-run variance under GRPO is not measured, so even the ID result needs replication with at least 3 seeds per arm (v0.2 Phase 5).
+
+## 6. Phase 2: Zero-Retraining Multi-Turn Diagnostic of the Round 2 Checkpoints (harness `0.2.0.dev0`)
+
+This section uses the same 4-bit base model (`unsloth/Qwen3-8B-unsloth-bnb-4bit`) and the same Round 2 LoRA adapters, with Round 2 decoding: `temperature=0.7, top_p=0.8, top_k=20, presence_penalty=1.0, seed=42, enable_thinking=False`, 2,048 tokens per turn. It was served by vLLM 0.34 on one A100-40GB, on the same evaluation seeds. There was no retraining.
+
+- **2A, same-prompt repair** (`scripts/phase2_repair.py`).
+  - Turn 1 is exactly the Round 2 single-turn prompt (apparatus note + CSV previews).
+  - If the script crashes or `answer.json` fails the public schema check, the policy sees its own STDOUT/STDERR (400-character head + 800-character tail), the turn number and `answer_status`, and may resubmit, up to 3 turns. It never sees anything derived from the truth.
+  - Every episode is run once and scored after turn 1 (K=1) and after the last turn (K=3), so the K=1 vs K=3 comparison is exactly paired.
+- **2B, harness transfer:** the standard `pullgym run-fast --tool-mode code --max-turns 5`. The first turn contains no apparatus note and no data previews; the agent must open the files itself.
+
+Reproduce the tables with `python scripts/phase2_analysis.py --phase2 runs/phase2`.
+
+### 6.1 Validity (valid answers out of 100 OOD tasks or 120 ID tasks)
+
+| Set | Model | Round 2 (1 turn) | 2A K=1 (re-draw) | 2A K=3 (repair) | 2B `run-fast` (5 turns, no previews) |
+| :--- | :--- | ---: | ---: | ---: | ---: |
+| ID, calibrated | `base` | 70 | 71 | 100 | 64 |
+| | `binary_r2` | 118 | 120 | 120 | 85 |
+| | `log_score_r2` | 120 | 120 | 120 | 55 |
+| OOD, calibrated | `base` | 56 | 53 | 72 | 74 |
+| | `binary_r2` | 67 | 68 | 75 | 52 |
+| | `log_score_r2` | 53 | 58 | 81 | 69 |
+| OOD, neutral | `base` | 53 | 48 | 66 | 76 |
+| | `binary_r2` | 55 | 47 | 68 | 87 |
+| | `log_score_r2` | 61 | 74 | 93 | 61 |
+
+### 6.2 Findings
+
+1. **Evaluation sampling noise is as large as the effects being claimed.**
+   - Turn 1 of 2A is a fresh draw of the Round 2 evaluation. Only 10–55% of first turns are textually identical (newer vLLM numerics), but no paired K=1 vs Round 2 difference is significant, so the setup reproduces Round 2 in distribution.
+   - Between the two draws, the *same* model on the *same* task flips between valid and invalid on **15–37%** of OOD tasks, with a per-task reward SD of about **6**.
+   - Example: `log_score_r2` on neutral OOD is 61 valid in Round 2 and 74 in the re-draw (19 vs 6 discordant tasks).
+   - **A single draw per task is therefore not enough to compare checkpoints.** Phase 5 must evaluate each task several times (≥4) and average per task before pairing.
+2. **With two draws per task, `log_score_r2` beats `binary_r2` OOD, but not the base model.** Averaging the Round 2 draw and the 2A K=1 draw per task (single-turn, all-episode reward):
+
+   | Comparison | OOD calibrated | OOD neutral |
+   | :--- | :--- | :--- |
+   | `log_score_r2` − `binary_r2` | **+2.02 [+0.49, +3.53]** | **+1.55 [+0.17, +2.91]** |
+   | `log_score_r2` − `base` | +0.28 [−1.24, +1.80] | +0.14 [−1.35, +1.61] |
+   | `binary_r2` − `base` | **−1.74 [−3.37, −0.11]** | −1.41 [−2.85, +0.04] |
+
+   This revises §5. The OOD difference between the arms is real at two draws, but it comes from binary RL *hurting* transfer, not from log-score RL *improving* it. The accurate claim is: **log-score RLVR improves ID calibration while leaving OOD performance at the base model's level; binary RLVR improves ID validity but degrades OOD** (significant on the calibrated prompt, borderline on neutral).
+3. **Repair raises validity, but the repaired answers are mostly confidently wrong.**
+   - Up to 3 repair turns add **+19 to +24 points** of OOD validity. They fix most turn-1 crashes for `log_score_r2` (17/30 calibrated, 19/22 neutral) and few for `binary_r2` (5/28, 17/47).
+   - All-episode reward nevertheless *drops* by **0.85–1.66** (every CI excludes 0). A repaired answer on an unfamiliar OOD task scores far below the fallback an invalid answer receives (prior − 1, about −3.5):
+
+     | Model | Repaired answers' median reward | Their cov68 | Share at the −20 floor |
+     | :--- | ---: | ---: | ---: |
+     | `base` | −20 / −15 | 26% / 22% | 58% / 50% |
+     | `binary_r2` | −20 / −7.6 | 29% / 24% | 71% / 48% |
+     | `log_score_r2` | **−2.4 / −2.2** | **48% / 47%** | **39% / 26%** |
+
+     (calibrated / neutral OOD)
+   - `log_score_r2` is the arm whose repaired answers are closest to honest.
+   - Consequence for reporting: any harness change that raises validity can *lower* `rew_all` under the current invalid-answer fallback. Always read `valid%`, the paired valid-only metrics and `rew_all` together.
+4. **The trained adapters do not transfer to the zero-preview `run-fast` harness in distribution.**
+   - ID validity under 2B falls to 55/120 for `log_score_r2` and 85/120 for `binary_r2`, against 120/120 for both with the training prompt.
+   - The failing episodes use all 5 turns. They guess column names that the training prompt used to show (`KeyError: 'time_intervals'`), then end with NaN answers (16), no answer file (14), tied quantiles (8) or malformed JSON (8).
+   - The base model, never specialised to the preview prompt, loses much less (64 vs 71).
+   - On OOD under 2B, the valid answers of `log_score_r2` are far better calibrated than those of `binary_r2`: **cov68 60.9% vs 32.7%**, with 14 vs 0 discordant tasks and McNemar p = 1.2×10⁻⁴ on the 33 tasks both answered. Its lower validity still leaves all-episode reward even (−1.76 [−3.48, +0.02]).
+5. **Implications for Phase 5.**
+   - Train multi-turn in the `run-fast` format (`prompt_style="run_fast"`). Adapters trained on the preview prompt learn to depend on it.
+   - Evaluate with ≥4 draws per task.
+   - Keep the RL invalid penalty (−12) below the floor (−10), so a crash never beats a wide honest interval during training.
+   - Report `rew_all` together with `valid%` and the paired valid-only metrics. Under the leaderboard's milder fallback, higher validity can lower `rew_all`.
+
+### 6.3 First Look: the Round 2 Checkpoints on the New Tier-5 Families
+
+These are the same checkpoints on `outliers`, `unmodeled_drift`, `look_elsewhere` and `datasheet_metrology` (25 dev seeds each, `calibrated`, one draw). None of these families was seen in training, and none existed when the checkpoints were trained.
+
+| Harness | Model | Valid | cov68 [Wilson 95%] | cov95 | Pull width | `rew_v` | `rew_all` |
+| :--- | :--- | ---: | :--- | ---: | ---: | ---: | ---: |
+| 2A K=3 (previews, 3 turns) | `base` | 88% | 30.7% [22%, 41%] | 45.5% | 3.75 | −7.65 | −6.94 |
+| | `binary_r2` | 94% | 46.8% [37%, 57%] | 59.6% | 2.49 | −6.74 | −6.48 |
+| | `log_score_r2` | 91% | 39.6% [30%, 50%] | 49.5% | 5.53 | −9.12 | −8.50 |
+| 2B `run-fast` (5 turns) | `base` | 31% | 22.6% [11%, 40%] | 41.9% | 62.7 | −11.16 | −5.61 |
+| | `binary_r2` | 83% | 42.2% [32%, 53%] | 48.2% | 14.0 | −10.25 | −9.22 |
+| | `log_score_r2` | 58% | 37.9% [27%, 51%] | 44.8% | 4.35 | −8.06 | −6.31 |
+
+The calibrated reference scores about 0 on these families, and a frontier model's valid answers match it on Tiers 1–4.
+
+- **Tier 5 is far from solved by an 8B model.** Every arm is badly overconfident, and no difference between the arms in `rew_all` is significant against `base`. The one exception is `binary_r2` − `base` under `run-fast`, at −3.61 [−5.46, −1.75], which is driven by validity.
+- **Per family under 2A K=3:**
+  - `unmodeled_drift` is the hardest. The trained arms cover 13–17% at 68%, against 33% for `base`, with `rew_all` of −10.5 and −12.9 against −4.5. They reproduce the trained "difference of means / plain fit" habit without checking residuals.
+  - On `outliers`, both RL arms emit the same weighted-mean script (cov68 40%, reward −2.67).
+  - `datasheet_metrology` separates the arms in the opposite direction from Tiers 1–3: `binary_r2` reaches 61% cov68 and −2.3 reward, against 50% and −8.8 for `log_score_r2`. This rests on 25 seeds and one draw.
+- This is the headroom Tier 5 was built for. The v0.2 frontier matrix (Phase 4) will show whether larger models detect unannounced glitches and drift, and the Phase 5 arms will be evaluated on these families as `OOD_V02`.
+
 
 ## Mandatory Audits & Code-Level Verification (`docs/ROADMAP.md` §3)
 

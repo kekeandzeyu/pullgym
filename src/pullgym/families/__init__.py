@@ -1,14 +1,18 @@
 from pullgym.families.base import Episode, Family, Quantity
 from pullgym.families.correlated_norm import CorrelatedNorm
 from pullgym.families.counting_rate import CountingRate
+from pullgym.families.datasheet_metrology import DatasheetMetrology
 from pullgym.families.dead_time import DeadTime
 from pullgym.families.decay_background import DecayBackground
 from pullgym.families.errors_xy import ErrorsXY
 from pullgym.families.line_fit import LineFit
+from pullgym.families.look_elsewhere import LookElsewhere
 from pullgym.families.low_count_rate import LowCountRate
 from pullgym.families.no_signal import NoSignal
+from pullgym.families.outliers import Outliers
 from pullgym.families.peak_background import PeakBackground
 from pullgym.families.underestimated_errors import UnderestimatedErrors
+from pullgym.families.unmodeled_drift import UnmodeledDrift
 from pullgym.families.voltmeter_gain import VoltmeterGain
 from pullgym.families.weighted_mean import WeightedMean
 
@@ -29,6 +33,11 @@ _ALL = (
     DeadTime(),
     # tier 4
     NoSignal(),
+    # tier 5: implicit metrology and unprompted diagnostics
+    Outliers(),
+    UnmodeledDrift(),
+    LookElsewhere(),
+    DatasheetMetrology(),
 )
 FAMILIES: dict[str, Family] = {f.name: f for f in _ALL}
 

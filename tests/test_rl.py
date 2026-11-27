@@ -7,6 +7,8 @@ from pullgym.families import FAMILIES
 from pullgym.report import report
 from pullgym.rl import (
     OOD_TEST_FAMILIES,
+    OOD_V01_FAMILIES,
+    OOD_V02_FAMILIES,
     TRAIN_FAMILIES,
     build_rl_records,
     evaluate_completions_to_trials,
@@ -19,9 +21,12 @@ from pullgym.rl import (
 
 def test_train_and_ood_splits_partition_all_families():
     assert set(TRAIN_FAMILIES).isdisjoint(set(OOD_TEST_FAMILIES))
+    assert set(OOD_V01_FAMILIES).isdisjoint(set(OOD_V02_FAMILIES))
     assert set(TRAIN_FAMILIES) | set(OOD_TEST_FAMILIES) == set(FAMILIES)
     assert len(TRAIN_FAMILIES) == 8
-    assert len(OOD_TEST_FAMILIES) == 4
+    assert len(OOD_V01_FAMILIES) == 4 and len(OOD_V02_FAMILIES) == 4
+    assert OOD_TEST_FAMILIES == OOD_V01_FAMILIES + OOD_V02_FAMILIES
+    assert all(FAMILIES[f].tier == 5 for f in OOD_V02_FAMILIES)
 
 
 def test_build_rl_records_has_no_truth_leak():
@@ -131,3 +136,67 @@ def test_evaluate_completions_to_trials_and_report(tmp_path):
     assert "qwen3-4b-logscore" in text
     assert "line_fit" in text
     assert "67%" in text  # 2 of 3 valid
+
+
+def test_truncate_observation_keeps_exception_tail():
+    from pullgym.rl import truncate_observation
+
+    text = "x" * 5000 + "\nValueError: mean must be 1 dimensional"
+    out = truncate_observation(text)
+    assert len(out) < 1300
+    assert out.endswith("ValueError: mean must be 1 dimensional")
+    assert out.startswith("x" * 400)
+    assert truncate_observation("short") == "short"
+
+
+def test_repair_episode_feeds_back_schema_only_and_recovers():
+    from pullgym.rl import repair_episode
+
+    rec = build_rl_records(("line_fit",), n_per_family=1, seed_start=100_000, shuffle=False)[0]
+    truth = json.loads(rec["truth_json"])["quantities"]["velocity"]
+    seen = []
+
+    def generate(messages):
+        seen.append([dict(m) for m in messages])
+        if len(seen) == 1:  # crashes
+            return "```python\nimport numpy as np\nnp.zeros(3) + np.zeros(4)\n```"
+        if len(seen) == 2:  # writes tied quantiles
+            return (
+                "```python\nimport json, os\nos.makedirs('artifacts', exist_ok=True)\n"
+                "json.dump({'velocity': {'q025': 1, 'q16': 1, 'q50': 2, 'q84': 3, 'q975': 4}}, "
+                "open('artifacts/answer.json', 'w'))\n```"
+            )
+        return _line_fit_script()
+
+    ep = repair_episode(rec, generate, max_turns=3)
+    assert len(ep.turns) == 3 and len(seen) == 3
+    assert [t.answer_status for t in ep.turns][1:] == [
+        "invalid: velocity: q025 must be strictly less than q16",
+        "valid",
+    ]
+    assert ep.outcome_after(1).valid is False and ep.outcome_after(3).valid is True
+    fb1, fb2 = seen[1][-1]["content"], seen[2][-1]["content"]
+    assert "operands could not be broadcast" in fb1 and "turn: 1/3" in fb1
+    assert "answer_status (`artifacts/answer.json`): missing" in fb1
+    assert "q025 must be strictly less than q16" in fb2
+    # Observations never contain hidden numbers.
+    for fb in (fb1, fb2):
+        for hidden in (truth["truth"], truth["ref_sigma"]):
+            assert f"{hidden:.6g}" not in fb
+        assert "reward" not in fb.lower()
+    # Stops as soon as the answer validates.
+    ep2 = repair_episode(rec, lambda m: _line_fit_script(), max_turns=3)
+    assert len(ep2.turns) == 1 and ep2.turns[0].valid
+
+
+def test_write_rl_trial_round_trips_through_report(tmp_path):
+    from pullgym.rl import repair_episode, write_rl_trial
+
+    recs = build_rl_records(("line_fit",), n_per_family=2, seed_start=100_000, shuffle=False)
+    for rec in recs:
+        ep = repair_episode(rec, lambda m: "no code", max_turns=2)
+        assert len(ep.turns) == 2
+        write_rl_trial(tmp_path / "job", rec, ep.outcome_after(2), ep.messages,
+                       model_name="m|K2", turns=len(ep.turns))
+    text = report(tmp_path / "job", group_by="model", truth_bins=1)
+    assert "m|K2" in text and " 0% " in text

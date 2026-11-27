@@ -34,7 +34,7 @@ from vllm import SamplingParams  # noqa: E402
 
 from pullgym.report import load_episodes, report  # noqa: E402
 from pullgym.rl import (  # noqa: E402
-    OOD_TEST_FAMILIES,
+    OOD_V01_FAMILIES as OOD_TEST_FAMILIES,  # v0.1 recipe: evaluate on the 4 v0.1 OOD families
     TRAIN_FAMILIES,
     build_rl_records,
     completion_text,

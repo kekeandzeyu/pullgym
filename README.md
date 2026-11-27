@@ -8,7 +8,7 @@ The question it answers:
 
 > When an agent reports a 68% interval on a measured quantity, how often does the true value fall inside it? A calibrated analyst is right 68% of the time.
 
-> **Status: v0.1.0 released; v0.2.0 in development (`0.2.0.dev0`).** Twelve experiment families across four tiers, the scorer, the Harbor exporter, the fast runner and the reporting tool work, and every family's reference analysis is verified calibrated. Multi-turn commercial/open frontier baselines (`deepseek-flash` across `calibrated` and `neutral`, `kimi-k3.1-pro`, `qwen3.8-omni-flash`, `qwen/qwen3.8-27b`, and `nemotron-3-ultra-550b`) and controlled `Qwen3-8B` GRPO results (`log_score` vs. `binary` across two KL regimes, 1,600 evaluated episodes in [docs/RLVR_RESULTS.md](docs/RLVR_RESULTS.md)) are published below. The v0.1 results were produced with harness `0.1.0`. v0.2 changes the multi-turn runner's observations, so v0.1 and v0.2 runs must not be mixed in one table (`pullgym report` warns when they are). Interfaces may change before v0.2.
+> **Status: v0.1.0 released; v0.2.0 in development (`0.2.0.dev0`).** Sixteen experiment families across five tiers (Tier 5 is new in `0.2.0.dev0`), the scorer, the Harbor exporter, the fast runner and the reporting tool work, and every family's reference analysis is verified calibrated. Multi-turn commercial/open frontier baselines (`deepseek-flash` across `calibrated` and `neutral`, `kimi-k3.1-pro`, `qwen3.8-omni-flash`, `qwen/qwen3.8-27b`, and `nemotron-3-ultra-550b`) and controlled `Qwen3-8B` GRPO results (`log_score` vs. `binary` across two KL regimes, 1,600 evaluated episodes in [docs/RLVR_RESULTS.md](docs/RLVR_RESULTS.md)) are published below. The v0.1 results were produced with harness `0.1.0`. v0.2 changes the multi-turn runner's observations, so v0.1 and v0.2 runs must not be mixed in one table (`pullgym report` warns when they are). Interfaces may change before v0.2.
 
 ## Why
 
@@ -107,13 +107,17 @@ To score the log density, the five quantiles are read as a full distribution: th
 | | | `correlated_norm` | A density from runs over several days, each day sharing its own calibration error |
 | | | `dead_time` | A true count rate behind a counter whose dead time is uncertain, giving an asymmetric interval |
 | 4. Traps | The honest answer is a limit | `no_signal` | The strength of a faint line that is often indistinguishable from zero |
+| 5. Implicit metrology | Nothing in the note points at the problem | `outliers` | Local g from automated free-fall drops, some silently corrupted by trigger glitches |
+| | | `unmodeled_drift` | A frequency shift from unevenly interleaved sample and reference runs on a drifting baseline |
+| | | `look_elsewhere` | The strength of a resonance whose energy is unknown, so noise bumps elsewhere mimic it |
+| | | `datasheet_metrology` | A resistance from a voltmeter specified by a GUM datasheet (`k = 2` gain, rectangular offset limit, small-N scatter), with readings in mV, current in µA and the answer in Ω |
 
-Planned for v0.2, as a new Tier 5 of implicit metrology and unprompted diagnostics:
+Tier 5 exists because frontier agents reproduce the reference task by task on Tiers 1–4, where the apparatus note states every systematic. In `outliers` and `unmodeled_drift` the note says nothing about glitches or drift (a test enforces this), so they must be found from the residuals. `datasheet_metrology` gives the systematics, but only in the conventions of a real datasheet, which subsumes the earlier `unit_mismatch` idea.
 
-- `outliers`: unannounced glitches in the data.
-- `unmodeled_drift`: a smooth baseline drift that only the residuals reveal.
-- `look_elsewhere`: a peak whose location is unknown, so a trials factor applies.
-- `datasheet_metrology`: GUM datasheet conventions (`k = 2` expanded uncertainties, rectangular limits, small-N Type A scatter) and mV/µA/Ω unit conversions. It subsumes the earlier `unit_mismatch` idea.
+Hidden nuisance hyperparameters are kept from becoming a secret advantage for the reference: a reasonable analysis that does not know them must come close to the reference (`tests/test_tier5.py`). Two examples:
+
+- On `outliers`, a contamination mixture with deliberately different priors scores −0.08 against the reference's −0.04 (300 seeds).
+- On `unmodeled_drift`, a baseline polynomial whose degree is chosen by BIC scores −0.08 against −0.04.
 
 ### What the traps catch
 
@@ -129,8 +133,21 @@ Each family is built so that a common shortcut gives the wrong error bar. The ta
 | `dead_time` | Correct for dead time but ignore its uncertainty | 6% | 12% | 15.8 | 0.06 | −13.4 |
 | `low_count_rate` | √N Gaussian errors | 67% | 94% | 0.97 | 1.29 | −0.48 |
 | `no_signal` | Sideband-subtracted counts with √N Gaussian errors | 65% | 92% | 1.08 | 1.53 | −0.57 |
+| `outliers` | Weighted mean with its formal error | 34% | 60% | 2.48 | 0.91 | −2.77 |
+| `outliers` | 3σ clipping, then weighted mean | 62% | 91% | 1.13 | 0.95 | −0.12 |
+| `unmodeled_drift` | Difference of the two means (no detrending) | 7% | 13% | 13.1 | 0.79 | −14.5 |
+| `unmodeled_drift` | Linear detrending only | 12% | 26% | 6.77 | 0.90 | −10.6 |
+| `look_elsewhere` | Fit the largest bump; Gaussian error | 45% | 80% | 1.07 | 1.01 | −0.55 |
+| `datasheet_metrology` | Statistical error only, ignoring the datasheet | 19% | 41% | 5.01 | 0.23 | −5.47 |
+| `datasheet_metrology` | Zero offset ignored | 46% | 78% | 1.48 | 0.69 | −0.51 |
+| `datasheet_metrology` | The `k = 2` gain spec read as 1σ | 81% | 99% | 0.73 | 1.42 | −0.15 |
 
 The reference analyses average a reward of about 0. In `low_count_rate` and `no_signal`, the Gaussian shortcut keeps roughly nominal coverage. It loses on sharpness and reward instead, because its interval is wider than the data support and runs into negative rates. Those two families test efficiency and respect for the physical boundary more than coverage.
+
+Some Tier-5 mistakes are cheap in reward, and that is expected:
+
+- **Sigma clipping on `outliers`** is a legitimate way of noticing the glitches, so it loses little. The trap is the unexamined weighted mean.
+- **Reading `datasheet_metrology`'s conventions too cautiously** (the `k = 2` spec as 1σ, or the offset limit as 1σ) over-covers (81% / 99%), but a proper score charges little for caution. It shows up in coverage and sharpness rather than in reward.
 
 ### Reference analyses are calibrated
 
@@ -141,7 +158,7 @@ Every family ships a reference analysis written by a human. Before any model is 
 | `line_fit` | 66.9% | 94.9% | +0.01 | 1.01 | 1.01 |
 | `weighted_mean` | 68.3% | 95.3% | +0.01 | 1.00 | 0.99 |
 | `counting_rate` | 64.3%\* | 95.1% | +0.02 | 1.04 | 1.07 |
-| `decay_background` | 67.5% | 94.2% | +0.02 | 1.03 | 1.01 |
+| `decay_background` | 67.3% | 94.3% | +0.01 | 1.03 | 1.01 |
 | `peak_background` | 68.0% | 94.5% | +0.01 | 1.02 | 1.00 |
 | `low_count_rate` | 67.2% | 94.6% | −0.01 | 0.96 | 1.00 |
 | `voltmeter_gain` | 69.3% | 94.8% | −0.02 | 1.00 | 0.97 |
@@ -150,6 +167,10 @@ Every family ships a reference analysis written by a human. Before any model is 
 | `correlated_norm` | 66.8% | 95.2% | −0.01 | 1.00 | 1.01 |
 | `dead_time` | 68.9% | 94.8% | +0.03 | 1.00 | 0.97 |
 | `no_signal` | 68.0% | 94.2% | +0.00 | 0.95 | 0.99 |
+| `outliers` | 67.3% | 95.2% | +0.02 | 1.00 | 1.01 |
+| `unmodeled_drift` | 68.0% | 94.9% | −0.01 | 1.00 | 0.99 |
+| `look_elsewhere` | 67.7% | 94.2% | −0.06 | 0.97 | 1.01 |
+| `datasheet_metrology` | 66.1% | 94.0% | +0.01 | 1.00 | 1.03 |
 
 \* A fluctuation in this seed range: on 20,000 seeds, `counting_rate` gives 68.0% ± 0.3% and 95.1% ± 0.2%. Its reference is a Bayesian posterior whose coverage is essentially exact by construction.
 
@@ -263,12 +284,17 @@ Key findings, as seed-paired differences with paired-bootstrap 95% CIs (full tab
   - At `98–100%` valid, `binary_r2` keeps a 10× unit error in `counting_rate` error bars (geometric-mean sharpness `7.32`) and ignores the `voltmeter_gain` certificate (`reward = −9.03`).
   - By step 150, `80%` of its batches give all 8 rollouts the same reward. For `log_score_r2` that fraction averages `1.3%` and ends at `5%`.
 - **Tier-1 width-inflation audit:** no global inflation. `log_score_r2`'s geometric-mean sharpness is `1.00` on `line_fit` and `weighted_mean`. On `counting_rate` it is `1.56` (median `1.03`), against `7.32` for `binary_r2`. Log score removed the 10× unit bug in most `counting_rate` episodes, but not all.
-- **Out-of-distribution transfer is not established.**
-  - On the 4 held-out families (`calibrated`, `n=100` paired), `log_score_r2` − `binary_r2` gives Δreward = `+1.55` [`−0.33`, `+3.41`].
-  - On the `34` tasks both answered validly, Δcov68 = `+11.8 ± 10.8` pt (9 vs 5 discordant, p = 0.42), and 18 of those 34 pairs are `dead_time`.
-  - Against the base model, Δreward = `−0.38` [`−2.45`, `+1.77`].
-  - On `neutral` OOD, Δcov68 against `binary_r2` is `−12.5 ± 9.6` pt.
-  - Single-turn `enable_thinking=False` runtime errors on unseen CSV layouts keep OOD validity at `53%` (`errors_xy` `32%`, `no_signal` `40%`). Multi-turn execution feedback, several training seeds and larger `n` (v0.2 Phase 5) are needed before claiming transfer.
+- **Out of distribution, log-score RLVR does no harm, while binary RLVR does.**
+  - With one evaluation draw per task (`n=100` paired, `calibrated`), `log_score_r2` − `binary_r2` gives Δreward = `+1.55` [`−0.33`, `+3.41`], which is not significant.
+  - The Phase 2 re-draw shows why: at temperature 0.7 the same checkpoint flips between valid and invalid on 15–37% of OOD tasks from one draw to the next.
+  - Averaging two draws per task, `log_score_r2` beats `binary_r2` by `+2.02` [`+0.49`, `+3.53`] (`calibrated`) and `+1.55` [`+0.17`, `+2.91`] (`neutral`).
+  - It does *not* beat the base model (`+0.28` [`−1.24`, `+1.80`]), while `binary_r2` falls below it (`−1.74` [`−3.37`, `−0.11`]).
+  - Single-turn runtime errors on unseen CSV layouts keep OOD validity near `53–74%`.
+- **Phase 2 (no retraining; [docs/RLVR_RESULTS.md §6](docs/RLVR_RESULTS.md)):**
+  - Up to 3 truth-free repair turns raise OOD validity by `+19–24` points, but the repaired answers are mostly confidently wrong. Their median reward is `−20` for `base` and `binary_r2`, but `−2.4` for `log_score_r2`, so all-episode reward *drops*.
+  - Under the standard zero-preview `run-fast` harness, both adapters lose most of their ID validity (`log_score_r2` 120 → 55 of 120), because they learned to rely on the CSV previews in the training prompt.
+  - On the new Tier-5 families, every 8B arm is badly overconfident (cov68 13–47%), with no significant difference between the arms. Tier 5 has the headroom v0.1 lacked.
+  - Phase 5 therefore trains in the `run-fast` format and evaluates with ≥4 draws per task.
 
 ### Next steps (`v0.1` → `v0.2`)
 
@@ -281,9 +307,9 @@ See [docs/ROADMAP.md](docs/ROADMAP.md) for the updated roadmap:
    - `pullgym report` has paired CIs, Wilson intervals, pinball skill and md/LaTeX output.
    - `probe` uses the reference's exact quantiles.
    - pandas and matplotlib are now core dependencies.
-2. **Harder Tier-5 physics trap families:** frontier multi-turn agents reproduce the reference task by task on v0.1. v0.2 adds `outliers`, `unmodeled_drift`, `look_elsewhere` and `datasheet_metrology`, with no hints about glitches or drift in the apparatus note.
+2. **Tier-5 physics trap families (Phase 3, done in `0.2.0.dev0`):** `outliers`, `unmodeled_drift`, `look_elsewhere` and `datasheet_metrology`. All are calibrated on 2,000 seeds and beat every degenerate strategy in `probe`. They are held out as `OOD_V02_FAMILIES`, and `TRAIN_FAMILIES` is unchanged.
 3. **Uniform frontier leaderboard:** `Claude`, `GPT`, `Gemini`, `DeepSeek` chat vs. reasoner and `Qwen3-Max` under harness `0.2.0`, at `n = 25` seeds per family on all 16 families. Report it with `--baseline oracle`, add a secret `test`-split anchor check, and submit to Harbor's community registry.
-4. **Multi-turn RLVR:** three arms (`base`, `binary`, `log_score`) with execution feedback, at least 3 training seeds per arm and paired CIs, to raise small-model OOD validity above `95%` and test transfer properly.
+4. **Multi-turn RLVR:** three arms (`base`, `binary`, `log_score`) trained in the `run-fast` format with execution feedback, with at least 3 training seeds per arm, at least 4 evaluation draws per task and paired CIs. Phase 2 showed that one draw per task is too noisy and that preview-trained adapters do not transfer to `run-fast`.
 
 ### Known limitations & RL audit warnings
 - **Distinguishing systematic modeling from lazy width inflation:** Under `log_score_reward`, error bars 10× too small cost about `−12` while error bars 10× too wide cost about `−1.8`. A policy that blindly multiplies every statistical error bar by `5×–8×` can raise OOD coverage without reading `apparatus_note.md`. Every RL evaluation must therefore report **Tier-1 clean sharpness (`line_fit`, `weighted_mean`, `counting_rate`) alongside OOD Tier-3/4 coverage**. Use the geometric mean (`sharp gm` in `pullgym report`), because the median is `1.00` for every model, the base model included, and cannot detect inflation in a minority of episodes. Also inspect the trained scripts to check that they actually parse the apparatus systematics.

@@ -41,10 +41,13 @@ from pullgym.runner import (
     FAST_DATA_DIR,
     _set_readonly,
     _set_writable,
+    answer_status,
 )
 
-# 8 training families covering clean stats, nuisance parameters, and 2 systematics;
-# 4 hard systematic / boundary families held out strictly for OOD evaluation.
+# 8 training families covering clean stats, nuisance parameters, and 2 systematics.
+# Held out strictly for OOD evaluation: the 4 hard systematic / boundary families
+# of v0.1 and the 4 Tier-5 families of v0.2. TRAIN_FAMILIES is frozen so that
+# v0.1 training runs stay comparable.
 TRAIN_FAMILIES: tuple[str, ...] = (
     "line_fit",
     "weighted_mean",
@@ -55,12 +58,19 @@ TRAIN_FAMILIES: tuple[str, ...] = (
     "voltmeter_gain",
     "underestimated_errors",
 )
-OOD_TEST_FAMILIES: tuple[str, ...] = (
+OOD_V01_FAMILIES: tuple[str, ...] = (
     "errors_xy",
     "correlated_norm",
     "dead_time",
     "no_signal",
 )
+OOD_V02_FAMILIES: tuple[str, ...] = (
+    "outliers",
+    "look_elsewhere",
+    "datasheet_metrology",
+    "unmodeled_drift",
+)
+OOD_TEST_FAMILIES: tuple[str, ...] = OOD_V01_FAMILIES + OOD_V02_FAMILIES
 
 # Disjoint from dev (0..), test_families (10k/20k), calibrate (1M), probe (2M).
 DEFAULT_TRAIN_SEED_START = 100_000
@@ -210,8 +220,11 @@ class ExecutionOutcome:
     valid: bool
     code: str | None
     exec_result: dict[str, Any] | None
-    scored: dict[str, Any] | None
+    scored: dict[str, Any] | None  # hidden: uses the truth, never shown to the policy
     error: str | None = None
+    # Public schema status of artifacts/answer.json ("missing" | "valid" |
+    # "invalid: ..."), safe to show to the policy.
+    answer_status: str | None = None
 
 
 def execute_completion(
@@ -254,6 +267,7 @@ def execute_completion(
         )
         try:
             exec_res = ws.run_python(code, timeout=timeout_sec)
+            status = answer_status(answer_path, list(truth["quantities"]))
             scored = scoring.score_episode(str(answer_path), truth)
         finally:
             _set_writable(root)
@@ -270,7 +284,142 @@ def execute_completion(
         exec_result=exec_res,
         scored=scored,
         error=err,
+        answer_status=status,
     )
+
+
+# ----------------------------------------------------------------------
+# Multi-turn repair: execution feedback without any access to the truth.
+
+OBS_HEAD_CHARS = 400
+OBS_TAIL_CHARS = 800
+
+
+def truncate_observation(text: str, head: int = OBS_HEAD_CHARS, tail: int = OBS_TAIL_CHARS) -> str:
+    """Keep the first `head` and last `tail` characters (the tail holds the
+    Python exception line), so RL contexts stay small."""
+    if len(text) <= head + tail:
+        return text
+    return f"{text[:head]}\n... [{len(text) - head - tail} chars omitted] ...\n{text[-tail:]}"
+
+
+def repair_feedback(outcome: ExecutionOutcome, turn: int, max_turns: int) -> str:
+    """The observation returned to the policy after a failed turn.
+
+    Built only from what the policy's own script printed and from the public
+    answer-file schema check: never from outcome.scored.
+    """
+    if outcome.code is None:
+        body = "No ```python``` code block was found in your reply."
+        status = "missing"
+    else:
+        r = outcome.exec_result or {}
+        body = (
+            f"Your script was executed (exit_code={r.get('exit_code')}, "
+            f"timed_out={r.get('timed_out')}).\n"
+            f"STDOUT:\n{truncate_observation(r.get('stdout', ''))}\n"
+            f"STDERR:\n{truncate_observation(r.get('stderr', ''))}"
+        )
+        status = outcome.answer_status or "missing"
+    return (
+        f"{body}\n"
+        f"turn: {turn}/{max_turns}\n"
+        f"answer_status (`{FAST_ANSWER_PATH}`): {status}\n"
+        "Fix the problem and reply with one complete, self-contained ```python ... ``` "
+        f"script that reads `{FAST_DATA_DIR}/` and writes `{FAST_ANSWER_PATH}`."
+    )
+
+
+@dataclass
+class RepairEpisode:
+    record: dict[str, Any]
+    turns: list[ExecutionOutcome]
+    messages: list[dict[str, str]]
+
+    def outcome_after(self, k: int) -> ExecutionOutcome:
+        """The episode's outcome had it been cut off after k turns."""
+        return self.turns[min(k, len(self.turns)) - 1]
+
+
+def repair_episode(
+    record: dict[str, Any],
+    generate: Callable[[list[dict[str, str]]], str],
+    *,
+    max_turns: int = 3,
+    timeout_sec: float = 15.0,
+) -> RepairEpisode:
+    """Run up to `max_turns` generate -> execute -> feedback turns.
+
+    Turn 1 uses the record's own prompt, so turn 1 alone is exactly the
+    single-turn RL evaluation. Further turns happen only while the answer is
+    not valid (repair, not refinement). Each turn's script runs in a fresh
+    workspace, as in single-turn evaluation.
+    """
+    messages = [dict(m) for m in record["prompt"]]
+    turns: list[ExecutionOutcome] = []
+    for turn in range(1, max_turns + 1):
+        text = generate(messages)
+        oc = execute_completion(
+            text, record["files_json"], record["truth_json"], timeout_sec=timeout_sec
+        )
+        turns.append(oc)
+        messages.append({"role": "assistant", "content": text})
+        if oc.answer_status == "valid" or turn == max_turns:
+            break
+        messages.append({"role": "user", "content": repair_feedback(oc, turn, max_turns)})
+    return RepairEpisode(record=record, turns=turns, messages=messages)
+
+
+def write_rl_trial(
+    job_dir: Path,
+    record: dict[str, Any],
+    outcome: ExecutionOutcome,
+    transcript: list[dict[str, Any]],
+    *,
+    model_name: str,
+    agent_name: str = "pullgym-rl",
+    elapsed_sec: float = 0.0,
+    turns: int = 1,
+) -> Path:
+    """Write one Harbor-compatible trial directory for an RL-evaluated episode."""
+    trial_dir = Path(job_dir) / record["task_name"]
+    verifier_dir = trial_dir / "verifier"
+    verifier_dir.mkdir(parents=True, exist_ok=True)
+    truth_doc = json.loads(record["truth_json"])
+    if outcome.scored is None:
+        # No code block -> score the missing answer via the official fallback penalty.
+        scored = scoring.score_episode(str(trial_dir / "_missing_answer.json"), truth_doc)
+    else:
+        scored = outcome.scored
+    agent_block = {"name": agent_name, "model_name": model_name}
+    cfg = {
+        "task": {"name": f"pullgym/{record['task_name']}", "family": record["family"]},
+        "trial_name": record["task_name"],
+        "job_id": Path(job_dir).name,
+        "split": record["split"],
+        "variant": record["variant"],
+        "seed": record["seed"],
+        "agent": agent_block,
+    }
+    (trial_dir / "config.json").write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    (verifier_dir / "reward.json").write_text(json.dumps(scored["rewards"]), encoding="utf-8")
+    (verifier_dir / "details.json").write_text(
+        json.dumps(scored["details"], indent=2), encoding="utf-8"
+    )
+    result_doc = {
+        "harness_version": __version__,
+        "config": {"agent": agent_block},
+        "agent_info": {"name": agent_name, "model_info": {"name": model_name}},
+        "timing": {"elapsed_sec": round(elapsed_sec, 3)},
+        "usage": {"turns": turns},
+        "rewards": scored["rewards"],
+    }
+    (trial_dir / "result.json").write_text(json.dumps(result_doc, indent=2), encoding="utf-8")
+    (trial_dir / "transcript.json").write_text(json.dumps(transcript, indent=2), encoding="utf-8")
+    (trial_dir / "trial.log").write_text(
+        f"valid={outcome.valid} turns={turns} error={outcome.error}\n", encoding="utf-8"
+    )
+    return trial_dir
 
 
 def _execute_batch(

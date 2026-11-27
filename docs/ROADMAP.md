@@ -28,7 +28,23 @@
    * The runner reports `turn k/N` and a schema-only `answer_status` after every tool call, warns 3 turns before the end and on the final turn, and no longer ends an episode on an invalid `answer.json`.
    * With several quantities, `reward.json` averages the calibration keys.
    * `pullgym report` has `rew_v`/`rew_all`, `pt_acc`, Wilson CIs, geometric-mean sharpness, clipped pinball skill, `--by tier`, `--paired`, `--baseline` (paired bootstrap and McNemar), a harness-version warning, `--format md|latex|json`, and accepts several paths.
-1. **Tier-5 Implicit Metrology & Unprompted Diagnostic Families:** Expand from 12 to 16 families by adding unprompted residual diagnostics (`outliers`, `unmodeled_drift`, `look_elsewhere`) and BIPM/GUM datasheet & cross-unit conventions (`datasheet_metrology`).
+1. **Tier-5 Implicit Metrology & Unprompted Diagnostic Families: done in `0.2.0.dev0`.** Expanded from 12 to 16 families:
+   * Unprompted residual diagnostics: `outliers` and `unmodeled_drift`. Their apparatus notes give no hint of the problem, and a test enforces this.
+   * A trials-factor search: `look_elsewhere`.
+   * BIPM/GUM datasheet and cross-unit conventions: `datasheet_metrology`.
+
+   The checks:
+   * Every reference is exact, deterministic and under 25 ms per episode.
+   * All four pass `calibrate --n 2000` (cov68 66.1–68.0%, cov95 94.0–95.2%) and `probe --n 1000`.
+   * The main shortcut fails, and an analysis that does not know the hidden hyperparameters stays close to the reference (`tests/test_tier5.py`).
+
+   The new families are held out as `OOD_V02_FAMILIES`, and `TRAIN_FAMILIES` is unchanged.
+1b. **Phase 2, zero-retraining multi-turn diagnostic of the R2 checkpoints: done** ([RLVR_RESULTS §6](RLVR_RESULTS.md)).
+   * **Evaluation noise:** between two draws at temperature 0.7, 15–37% of OOD tasks flip validity. With two draws per task, `log_score_r2` beats `binary_r2` OOD (+2.02 [+0.49, +3.53]) but ties `base`, while `binary_r2` falls below `base`.
+   * **Repair:** 3 repair turns raise OOD validity by 19–24 pt but lower `rew_all`, because the repaired answers are confidently wrong.
+   * **Harness transfer:** preview-trained adapters collapse under the zero-preview `run-fast` harness (ID validity 120 → 55).
+   * **Tier 5:** unsolved by all 8B arms (cov68 13–47%).
+   * **Consequences for Phase 5:** train in the `run-fast` format, with ≥4 evaluation draws per task and ≥3 training seeds per arm.
 2. **Uniform Frontier Leaderboard & Harbor Registry PR:** Evaluate cross-lab frontier models (`Claude`, `GPT`, `Gemini`, `DeepSeek` chat vs. reasoner, `Qwen3-Max`) at uniform `n = 25` seeds/family with paired CIs and `pinball_skill`, and submit `pullgym` to Harbor's community benchmark registry.
 3. **Multi-Turn Execution-Feedback GRPO:** Extend controlled `base` vs. `binary` vs. `log_score` GRPO to multi-turn `run_python` rollouts (`Dr. GRPO` with turn-level `action_mask`) to eliminate OOD runtime traceback fragility on 8B open models.
 
