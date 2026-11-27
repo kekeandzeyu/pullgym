@@ -77,9 +77,9 @@ ARK_PRICES = {
 # label -> endpoint settings. Temperatures follow each vendor's recommendation.
 MODELS: dict[str, dict] = {
     "deepseek-v4.1-flash-eco": dict(base=ARK, key="ARK_API_KEY", model="deepseek-v4-1-flash-economy-261017",
-                                    temp=1.0, conc=4, cap=45.0, plan=REDUCED),
+                                    temp=1.0, conc=12, cap=45.0, plan=REDUCED),
     "glm-5.3-flash": dict(base=ARK, key="ARK_API_KEY", model="glm-5-3-flash-260828",
-                          temp=1.0, conc=4, cap=40.0, plan=REDUCED),
+                          temp=1.0, conc=12, cap=40.0, plan=REDUCED),
     "deepseek-v4-pro": dict(base=ARK, key="ARK_API_KEY", model="deepseek-v4-pro-ga-260813",
                             temp=1.0, conc=4, cap=60.0, plan=[("t5-cal", 15)]),
     "kimi-k3.1-pro": dict(base=ARK, key="ARK_API_KEY", model="kimi-k3-1-pro-261024",
@@ -89,13 +89,13 @@ MODELS: dict[str, dict] = {
     # Pilot costs per Tier-5 episode: Haiku $0.002, Luna $0.007, Sonnet $0.04,
     # GPT-6.2 Sol $0.12, Gemini 4 Hydrogen $0.33 (dropped: too few episodes per $).
     "claude-haiku-5.5": dict(base=OPENROUTER, key="OPENROUTER_API_KEY", model="anthropic/claude-haiku-5.5",
-                             temp=1.0, conc=2, cap_usd=1.5, plan=REDUCED, cache=True,
+                             temp=1.0, conc=4, cap_usd=1.5, plan=REDUCED, cache=True,
                              extra={"usage": {"include": True}}),
     "gpt-6-luna": dict(base=OPENROUTER, key="OPENROUTER_API_KEY", model="openai/gpt-6-luna",
-                       temp=1.0, conc=2, cap_usd=2.5, plan=REDUCED,
+                       temp=1.0, conc=4, cap_usd=2.5, plan=REDUCED,
                        extra={"usage": {"include": True}}),
     "claude-sonnet-5.5": dict(base=OPENROUTER, key="OPENROUTER_API_KEY", model="anthropic/claude-sonnet-5.5",
-                              temp=1.0, conc=1, cap_usd=5.5, plan=[("t5-cal", 25), ("t5-neu", 25)], cache=True,
+                              temp=1.0, conc=2, cap_usd=5.5, plan=[("t5-cal", 25), ("t5-neu", 25)], cache=True,
                               extra={"usage": {"include": True}}),
     "gpt-6.2-sol": dict(base=OPENROUTER, key="OPENROUTER_API_KEY", model="openai/gpt-6.2-sol",
                         temp=1.0, conc=2, cap_usd=4.5, plan=[("t5-cal", 25)],
@@ -216,53 +216,57 @@ def run_model(label: str, args: argparse.Namespace, secret: str | None) -> dict:
     unit = "USD" if cfg.get("cap_usd") else "CNY"
     tally: Counter = Counter()
     quota_streak = 0  # consecutive quota-like failures across chunks
-    for stage, n_seeds in cfg["plan"]:
+    plan = args.plan or cfg["plan"]
+    for stage, n_seeds in plan:
         variant, fams = STAGES[stage]
         job_root = out / f"{args.split}_{variant}"
         conc = cfg["conc"]
-        for chunk_start in range(args.start, args.start + n_seeds, conc):
-            chunk_n = min(conc, args.start + n_seeds - chunk_start)
-            for fam_name in fams:
-                if cfg["base"] == OPENROUTER:
-                    reason = openrouter_guard(key)
-                    if reason:
-                        log(f"[{label}] OpenRouter guard: {reason}; stopping")
-                        return {"label": label, "status": "guard", **tally}
-                if cap is not None:
-                    spent, _ = spend(label, out)
-                    if spent >= cap:
-                        log(f"[{label}] budget cap reached: {spent:.2f} >= {cap:.2f} {unit}; stopping")
-                        return {"label": label, "status": "cap", "spent": round(spent, 2), **tally}
-                _, outcomes = run_suite(
-                    [get_family(fam_name)],
-                    split=args.split,
-                    n=chunk_n,
-                    start=chunk_start,
-                    variant=variant,
-                    secret=secret,
-                    agent=agent,
-                    out_dir=job_root,
-                    job_id=label,
-                    concurrency=conc,
-                    resume=True,
-                )
-                ran = [o for o in outcomes if not o.skipped]
-                errs = [o for o in ran if o.error]
-                tally["new"] += len(ran) - len(errs)
-                tally["errors"] += len(errs)
-                if ran:
-                    spent, n_ep = spend(label, out)
-                    log(f"[{label}] {stage} {fam_name} seeds {chunk_start}-{chunk_start + chunk_n - 1}: "
-                        f"{len(ran) - len(errs)} new, {len(errs)} errors; spend {spent:.2f} {unit} over {n_ep} episodes")
-                for o in errs:
-                    log(f"[{label}]   error {o.task_name}: {o.error[:200]}")
-                if errs and len(errs) == len(ran) and all(_quota_like(o.error) for o in errs):
-                    quota_streak += len(errs)
-                elif ran:
-                    quota_streak = 0
-                if quota_streak >= 3:
-                    log(f"[{label}] quota, balance or rate limit hit; parked until next run")
-                    return {"label": label, "status": "parked", **tally}
+        # A chunk spans every family of the stage (about 2x conc episodes), so all
+        # workers stay busy instead of waiting for one family's slowest episode.
+        # Seeds still advance together across families.
+        step = max(1, -(-2 * conc // len(fams)))
+        for chunk_start in range(args.start, args.start + n_seeds, step):
+            chunk_n = min(step, args.start + n_seeds - chunk_start)
+            if cfg["base"] == OPENROUTER:
+                reason = openrouter_guard(key)
+                if reason:
+                    log(f"[{label}] OpenRouter guard: {reason}; stopping")
+                    return {"label": label, "status": "guard", **tally}
+            if cap is not None:
+                spent, _ = spend(label, out)
+                if spent >= cap:
+                    log(f"[{label}] budget cap reached: {spent:.2f} >= {cap:.2f} {unit}; stopping")
+                    return {"label": label, "status": "cap", "spent": round(spent, 2), **tally}
+            _, outcomes = run_suite(
+                [get_family(f) for f in fams],
+                split=args.split,
+                n=chunk_n,
+                start=chunk_start,
+                variant=variant,
+                secret=secret,
+                agent=agent,
+                out_dir=job_root,
+                job_id=label,
+                concurrency=conc,
+                resume=True,
+            )
+            ran = [o for o in outcomes if not o.skipped]
+            errs = [o for o in ran if o.error]
+            tally["new"] += len(ran) - len(errs)
+            tally["errors"] += len(errs)
+            if ran:
+                spent, n_ep = spend(label, out)
+                log(f"[{label}] {stage} seeds {chunk_start}-{chunk_start + chunk_n - 1} x {len(fams)} families: "
+                    f"{len(ran) - len(errs)} new, {len(errs)} errors; spend {spent:.2f} {unit} over {n_ep} episodes")
+            for o in errs:
+                log(f"[{label}]   error {o.task_name}: {o.error[:200]}")
+            if errs and len(errs) == len(ran) and all(_quota_like(o.error) for o in errs):
+                quota_streak += len(errs)
+            elif ran:
+                quota_streak = 0
+            if quota_streak >= 3:
+                log(f"[{label}] quota, balance or rate limit hit; parked until next run")
+                return {"label": label, "status": "parked", **tally}
     return {"label": label, "status": "done", **tally}
 
 
@@ -275,6 +279,7 @@ def main() -> int:
     ap.add_argument("--start", type=int, default=0)
     ap.add_argument("--max-turns", type=int, default=20)
     ap.add_argument("--max-tokens", type=int, default=16384)
+    ap.add_argument("--plan", help="override every model's plan, e.g. t5-cal:25,t5-neu:10")
     ap.add_argument("--cap-scale", type=float, help="multiply every budget cap (e.g. 0.1 for a smoke run)")
     ap.add_argument("--out", default="runs/phase4")
     args = ap.parse_args()
@@ -303,6 +308,14 @@ def main() -> int:
             ap.error(f"{lb}: config is missing {missing}")
         if c["base"] in (ARK, OPENROUTER) and not (c.get("cap") or c.get("cap_usd")):
             ap.error(f"{lb}: billed endpoint without a budget cap")
+    if args.plan:
+        try:
+            args.plan = [(st_.split(":")[0], int(st_.split(":")[1])) for st_ in args.plan.split(",")]
+        except (IndexError, ValueError):
+            ap.error("--plan expects STAGE:N[,STAGE:N]")
+        bad = [st_ for st_, _ in args.plan if st_ not in STAGES]
+        if bad:
+            ap.error(f"unknown stage(s) {bad}; known: {', '.join(STAGES)}")
     secret = Path(args.secret_file).read_text().strip() if args.split == "test" else None
 
     meta_path = Path(args.out) / "models.json"

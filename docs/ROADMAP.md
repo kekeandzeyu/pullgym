@@ -45,7 +45,13 @@
    * **Harness transfer:** preview-trained adapters collapse under the zero-preview `run-fast` harness (ID validity 120 → 55).
    * **Tier 5:** unsolved by all 8B arms (cov68 13–47%).
    * **Consequences for Phase 5:** train in the `run-fast` format, with ≥4 evaluation draws per task and ≥3 training seeds per arm.
-2. **Uniform Frontier Leaderboard & Harbor Registry PR:** Evaluate cross-lab frontier models (`Claude`, `GPT`, `Gemini`, `DeepSeek` chat vs. reasoner, `Qwen3-Max`) at uniform `n = 25` seeds/family with paired CIs and `pinball_skill`, and submit `pullgym` to Harbor's community benchmark registry.
+2. **Uniform frontier matrix: done in `0.2.0.dev0`. The Harbor registry PR is still open.** See [FRONTIER_RESULTS.md](FRONTIER_RESULTS.md).
+   * **Coverage:** 9 models from 6 labs (Claude Sonnet/Haiku 5.5, GPT-6.2 Sol / GPT-6 Luna, Gemini 3.8 Flash, Kimi-K3.1-Pro, DeepSeek-V4-Pro / V4.1-Flash, GLM-5.3-Flash).
+   * **Harness:** `tools` mode, 20 turns, dev seeds 0–24, seed-paired with the oracle. Spend was capped: about $14 on OpenRouter and about 195 CNY at Ark list prices.
+   * **Result: the v0.2 premise does not hold for frontier agents.** On Tier 5, valid answers are oracle-level for every model: Δrew_v within 0.08 nats, no significant cov68 difference, sharpness about 1.0. The `neutral` prompt changes nothing beyond noise. The only frontier failure is validity: DeepSeek-V4-Pro (69% valid) and GLM (56%) run out of the turn budget.
+   * **Held-out `test` split:** the anchor models reproduce their dev results. One Haiku answer was a ×1000 unit error on `datasheet_metrology`, the only one in about 350 valid frontier `datasheet_metrology` answers.
+   * **`code` mode is unusable for tool-native reasoning models:** code ends up in the reasoning field, as pseudo tool-call markup, or as empty content. Frontier runs must use `tools` mode.
+   * **Implication:** the frontier-separating benchmark needs harder traps (v0.3). Tier 5 remains the small-model and RLVR target.
 3. **Multi-Turn Execution-Feedback GRPO:** Extend controlled `base` vs. `binary` vs. `log_score` GRPO to multi-turn `run_python` rollouts (`Dr. GRPO` with turn-level `action_mask`) to eliminate OOD runtime traceback fragility on 8B open models.
 
 ---

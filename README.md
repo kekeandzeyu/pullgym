@@ -226,7 +226,44 @@ How the question is asked changes the answers, so results are always reported pe
 
 ## Results & Roadmap
 
-### Commercial & Open Frontier Baselines (`pullgym run-fast`, `dev` split, seeds `0..14`)
+### v0.2 frontier matrix (Tier 5, `tools` mode, 20 turns, dev seeds 0–24)
+
+Full tables, methods and costs are in [docs/FRONTIER_RESULTS.md](docs/FRONTIER_RESULTS.md).
+
+All models run under one harness (`0.2.0.dev0`), on the same seeds, seed-paired
+against the exact reference analysis.
+
+| Model | n | Valid | cov68 [Wilson 95%] | cov95 | Δrew_v vs oracle [95% CI] | rew_all |
+|---|---:|---:|---|---:|---|---:|
+| Claude Sonnet 5.5 | 100 | 100% | 71% [61, 79] | 98% | −0.08 [−0.14, −0.01] | −0.107 |
+| Claude Haiku 5.5 | 100 | 100% | 72% [63, 80] | 97% | −0.05 [−0.11, +0.01] | −0.079 |
+| GPT-6.2 Sol | 100 | 100% | 67% [57, 75] | 96% | −0.03 [−0.08, +0.01] | −0.063 |
+| GPT-6 Luna | 100 | 100% | 66% [56, 75] | 96% | −0.06 [−0.11, −0.00] | −0.086 |
+| Kimi-K3.1-Pro | 48 | 100% | 67% [53, 78] | 96% | −0.02 [−0.09, +0.05] | −0.001 |
+| Gemini 3.8 Flash | 34 | 94% | 72% [55, 84] | 94% | −0.02 [−0.12, +0.07] | +0.021 |
+| DeepSeek-V4.1-Flash | 100 | 96% | 71% [61, 79] | 96% | −0.05 [−0.10, +0.00] | −0.178 |
+| DeepSeek-V4-Pro | 51 | 69% | 74% [58, 86] | 94% | −0.01 [−0.05, +0.03] | −1.020 |
+| GLM-5.3-Flash | 100 | 56% | 73% [60, 83] | 96% | +0.01 [−0.07, +0.11] | −1.365 |
+| *oracle* | 100 | 100% | 67% [57, 75] | 95% | — | −0.029 |
+
+- **Frontier tool-using agents are calibrated on Tier 5 when they answer.** Tier
+  5 means unflagged glitches, unmodelled drift, look-elsewhere scans and k = 2
+  datasheet conventions.
+  - Every valid-answer reward is within 0.08 nats of the oracle.
+  - No 68%-coverage difference from the oracle is significant (McNemar p ≥ 0.18).
+  - Sharpness is about 1.0, so the intervals are not padded.
+  - Removing the calibration hint (`neutral`) changes cov68 by at most 3 points.
+- **Frontier agents lose by not answering, not by being miscalibrated.**
+  DeepSeek-V4-Pro and GLM-5.3-Flash explore until the 20-turn budget runs out.
+  Of about 1,700 frontier episodes, 116 had no valid answer. 113 of them never
+  wrote an answer file, and 3 (all GLM) ended on a schema-invalid one.
+- **Tiers 1–4 remain saturated under v0.2** (5 seeds × 12 families, paired with
+  the oracle), and the held-out `test` split reproduces the dev results.
+- **Tier 5 still separates small models.** Qwen3-8B adapters reach only
+  13–47% cov68 on Tier 5 (see the RLVR section below). That makes Tier 5 an RLVR
+  target for small models, not a frontier leaderboard.
+
+### v0.1 commercial & open frontier baselines (`pullgym run-fast`, `dev` split, seeds `0..14`)
 
 Evaluated via multi-turn `pullgym run-fast` (`run_python` / `run_bash` in `tools` mode with `max_turns=20, max_tokens=8192`, or Python-block `code` mode for free-tier token budgets) alongside the exact seed-paired `oracle` (human reference) and `prior` baselines:
 
