@@ -1,6 +1,11 @@
-# Private planning notes: never publish
+# Private planning notes & active double-blind manuscripts: never publish
 plan-*.md
 *.plan.md
+paper/
+paper_*/
+
+# macOS
+.DS_Store
 
 # Python
 __pycache__/
