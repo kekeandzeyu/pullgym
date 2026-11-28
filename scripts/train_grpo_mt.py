@@ -326,12 +326,21 @@ def main(argv: list[str] | None = None) -> int:
     done = sorted(ckpts.glob("step_*"))
     if done:
         last = done[-1]
-        set_peft_model_state_dict(model, load_file(str(last / "adapter" / "adapter_model.safetensors")))
+        saved = load_file(str(last / "adapter" / "adapter_model.safetensors"))
+        res = set_peft_model_state_dict(model, saved)
+        unexpected = list(getattr(res, "unexpected_keys", []) or [])
+        b_norm = sum(float(p.detach().float().norm()) for n, p in model.named_parameters()
+                     if "lora_B" in n)
+        # A fresh LoRA has B = 0, so a zero norm means the checkpoint did not load.
+        if unexpected or b_norm == 0.0:
+            raise SystemExit(f"resume from {last} failed: {len(unexpected)} unexpected keys, "
+                             f"lora_B norm {b_norm}")
         state = torch.load(last / "trainer_state.pt", weights_only=False)
         opt.load_state_dict(state["optimizer"])
         sched.load_state_dict(state["scheduler"])
         start = int(state["step"])
-        print(f"resumed from {last} (step {start})", flush=True)
+        print(f"resumed from {last} (step {start}, {len(saved)} tensors, lora_B norm {b_norm:.4f})",
+              flush=True)
 
     schedule = train_schedule(args.steps, args.prompts_per_step, shuffle_seed=1000 + args.seed)
     norm = float(args.prompts_per_step * args.num_generations * args.max_turns * args.max_tokens)
