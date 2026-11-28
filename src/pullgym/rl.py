@@ -43,6 +43,7 @@ from pullgym.runner import (
     _set_writable,
     answer_status,
 )
+from pullgym.runner import truncate_observation as _truncate_observation
 
 # 8 training families covering clean stats, nuisance parameters, and 2 systematics.
 # Held out strictly for OOD evaluation: the 4 hard systematic / boundary families
@@ -298,9 +299,7 @@ OBS_TAIL_CHARS = 800
 def truncate_observation(text: str, head: int = OBS_HEAD_CHARS, tail: int = OBS_TAIL_CHARS) -> str:
     """Keep the first `head` and last `tail` characters (the tail holds the
     Python exception line), so RL contexts stay small."""
-    if len(text) <= head + tail:
-        return text
-    return f"{text[:head]}\n... [{len(text) - head - tail} chars omitted] ...\n{text[-tail:]}"
+    return _truncate_observation(text, head, tail)
 
 
 def repair_feedback(outcome: ExecutionOutcome, turn: int, max_turns: int) -> str:

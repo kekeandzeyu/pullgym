@@ -123,6 +123,14 @@ def cmd_run_fast(args) -> int:
             print("--model is required when --agent openai", file=sys.stderr)
             return 2
         extra_body = json.loads(args.extra_body) if args.extra_body else None
+        obs_truncate = None
+        if args.obs_truncate:
+            try:
+                head, tail = (int(x) for x in args.obs_truncate.split(","))
+            except ValueError:
+                print("--obs-truncate must be HEAD,TAIL (e.g. 400,800)", file=sys.stderr)
+                return 2
+            obs_truncate = (head, tail)
         agent = OpenAICompatibleAgent(
             model=args.model,
             base_url=args.base_url,
@@ -133,6 +141,7 @@ def cmd_run_fast(args) -> int:
             tool_mode=args.tool_mode,
             http_timeout_sec=args.http_timeout,
             extra_body=extra_body,
+            obs_truncate=obs_truncate,
         )
 
     def _progress(idx: int, total: int, oc) -> None:
@@ -246,6 +255,11 @@ def main(argv: list[str] | None = None) -> int:
     rf.add_argument("--max-tokens", type=int, default=8192)
     rf.add_argument("--tool-mode", choices=["tools", "code"], default="tools")
     rf.add_argument("--extra-body", help="extra JSON fields merged into the chat completion request")
+    rf.add_argument(
+        "--obs-truncate",
+        metavar="HEAD,TAIL",
+        help="show only the first HEAD and last TAIL chars of STDOUT/STDERR (Phase 5: 400,800)",
+    )
     rf.add_argument("--resume", action="store_true", help="skip already-scored episodes in job dir")
     rf.add_argument("--no-report", action="store_true", help="do not print summary table at end")
     rf.set_defaults(fn=cmd_run_fast)

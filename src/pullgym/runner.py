@@ -146,6 +146,14 @@ def _truncate(text: str, limit: int = MAX_TOOL_OUTPUT_CHARS) -> str:
     return f"{text[:half]}\n... [truncated {omitted} chars] ...\n{text[-half:]}"
 
 
+def truncate_observation(text: str, head: int, tail: int) -> str:
+    """Keep the first `head` and last `tail` characters (the tail holds the
+    Python exception line), so small-model RL contexts stay short."""
+    if len(text) <= head + tail:
+        return text
+    return f"{text[:head]}\n... [{len(text) - head - tail} chars omitted] ...\n{text[-tail:]}"
+
+
 def answer_status(answer_path: Path, quantities: list[str]) -> str:
     """Public-schema status of the answer file: "missing", "valid" or "invalid: ...".
 
@@ -433,10 +441,16 @@ class OpenAICompatibleAgent:
         http_timeout_sec: float = 180.0,
         extra_body: dict[str, Any] | None = None,
         cache_breakpoint: bool = False,
+        obs_truncate: tuple[int, int] | None = None,
     ) -> None:
         if tool_mode not in {"tools", "code"}:
             raise ValueError(f"unknown tool_mode {tool_mode!r}; expected 'tools' or 'code'")
+        if obs_truncate is not None and (len(obs_truncate) != 2 or min(obs_truncate) < 0):
+            raise ValueError("obs_truncate must be (head_chars, tail_chars), both >= 0")
         self.model_name = model
+        # Optional (head, tail) character limit on STDOUT/STDERR shown to the model
+        # (Phase 5 RL rollouts and their evaluation use (400, 800)).
+        self.obs_truncate = tuple(obs_truncate) if obs_truncate is not None else None
         self.max_turns = max_turns
         self.temperature = temperature
         self.max_tokens = max_tokens
@@ -551,7 +565,9 @@ class OpenAICompatibleAgent:
                 for idx_tc, tc in enumerate(tool_calls):
                     fn = tc.get("function") or {}
                     tname = fn.get("name", "")
-                    out = self._execute_tool(tname, fn.get("arguments", "{}"), workspace)
+                    out = self._clip(
+                        self._execute_tool(tname, fn.get("arguments", "{}"), workspace)
+                    )
                     if idx_tc == len(tool_calls) - 1:
                         st = status()
                         out["turn"] = f"{turn}/{self.max_turns}"
@@ -576,7 +592,7 @@ class OpenAICompatibleAgent:
             content = assistant_msg["content"]
             blocks = _PYTHON_FENCE_RE.findall(content)
             if blocks and (self.tool_mode == "code" or status() != "valid"):
-                out = workspace.run_python(blocks[-1])
+                out = self._clip(workspace.run_python(blocks[-1]))
                 st = status()
                 result.log_lines.append(
                     f"turn {turn}: code_block exit={out.get('exit_code')} answer_status={st}"
@@ -606,6 +622,16 @@ class OpenAICompatibleAgent:
             break
 
         return result
+
+    def _clip(self, out: dict[str, Any]) -> dict[str, Any]:
+        """Apply the optional (head, tail) limit to a tool result's STDOUT/STDERR."""
+        if self.obs_truncate is None:
+            return out
+        head, tail = self.obs_truncate
+        for key in ("stdout", "stderr"):
+            if isinstance(out.get(key), str):
+                out[key] = truncate_observation(out[key], head, tail)
+        return out
 
     def _budget_note(self, turn: int, st: str) -> str | None:
         """Turn-budget warning, shown only while the answer is not yet valid."""

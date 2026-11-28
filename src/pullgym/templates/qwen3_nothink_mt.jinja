@@ -1,0 +1,19 @@
+{#- Qwen3 chat template for non-thinking multi-turn RL (pullgym Phase 5).
+
+Identical to the stock Qwen3 template for system/user messages and for the
+generation prompt with enable_thinking=false, but past assistant turns keep the
+empty "<think>\n\n</think>\n\n" block the model was actually prompted with.
+The stock template drops it from history, so the turn-k prompt would not
+extend the token stream the model generated at turn k-1. With this template it
+does, and one episode is one training sequence. No tool calling: Phase 5 uses
+`run-fast --tool-mode code`. Serve it with `vllm serve ... --chat-template`. -#}
+{%- for message in messages %}
+    {%- if message.role == "assistant" %}
+        {{- '<|im_start|>assistant\n<think>\n\n</think>\n\n' + (message.content or '') + '<|im_end|>\n' }}
+    {%- else %}
+        {{- '<|im_start|>' + message.role + '\n' + message.content + '<|im_end|>\n' }}
+    {%- endif %}
+{%- endfor %}
+{%- if add_generation_prompt %}
+    {{- '<|im_start|>assistant\n<think>\n\n</think>\n\n' }}
+{%- endif %}
