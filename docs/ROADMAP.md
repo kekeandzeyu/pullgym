@@ -52,7 +52,32 @@
    * **Held-out `test` split:** the anchor models reproduce their dev results. One Haiku answer was a ×1000 unit error on `datasheet_metrology`, the only one in about 350 valid frontier `datasheet_metrology` answers.
    * **`code` mode is unusable for tool-native reasoning models:** code ends up in the reasoning field, as pseudo tool-call markup, or as empty content. Frontier runs must use `tools` mode.
    * **Implication:** the frontier-separating benchmark needs harder traps (v0.3). Tier 5 remains the small-model and RLVR target.
-3. **Multi-Turn Execution-Feedback GRPO:** Extend controlled `base` vs. `binary` vs. `log_score` GRPO to multi-turn `run_python` rollouts (`Dr. GRPO` with turn-level `action_mask`) to eliminate OOD runtime traceback fragility on 8B open models.
+3. **Phase 5, multi-turn execution-feedback GRPO (next; the main result of v0.2).** A controlled comparison of `base-mt`, `binary-mt` and `log_score-mt`, with 3 training seeds per trained arm.
+   * **Question:** does proper-score training on the 8 training families carry over to the held-out families, especially the unprompted Tier-5 diagnostics? The 8B models fail those, while frontier agents are oracle-level on them.
+   * **One harness:** training rollouts and evaluation both run the exact `run-fast --tool-mode code` loop, with 4 turns and observations truncated to the head 400 and tail 800 characters. Both talk to the same vLLM server and chat template.
+   * **Training tokens:** the server's token ids are used directly, with a prefix check before every turn and `action_mask = 0` on observation tokens.
+   * **Trainer:** a Dr. GRPO loop of our own, with group-normalised advantages so both reward arms have the same scale, and terminal rewards only.
+   * **Evaluation:** 4 draws per held-out task (calibrated and neutral prompts), 2 draws per training-family task. Everything is task-paired.
+   * **Dropped:** the `mixed` prompt ablation. The neutral prompt made no difference for frontier models.
+
+## 2b. Framing (decided 2026-11-28)
+
+`pullgym` v0.2 is written up as a **training/RLVR paper**:
+* The environment gives an exactly verifiable, strictly proper calibration reward to code-writing analysis agents.
+* The core experiment is the controlled `binary` vs `log_score` comparison.
+* The frontier matrix is a supporting finding: frontier agents are calibrated whenever they produce an answer, and their only loss is validity. It explains why the environment's value lies in training smaller models, and it is not a leaderboard claim.
+
+## 2c. v0.3 ideas: traps that could separate frontier models
+
+Phase 4 found exactly one frontier calibration failure: a ×1000 unit slip on a `datasheet_metrology` test task. Frontier agents run the standard residual diagnostics unprompted, so a v0.3 trap has to defeat the *textbook* check rather than skip it. Candidates:
+
+* **Autocorrelated noise (`ar1_noise`).** Residuals look Gaussian and clean, but the noise is AR(1). The naive standard error is too small by a factor of √((1+ρ)/(1−ρ)). Catching it needs a residual autocorrelation check, which standard fitting advice rarely includes.
+* **Selection or truncation bias (`trigger_threshold`).** Events are recorded only above an unannounced trigger threshold, so the estimator is biased (Malmquist-type). The only clue is a sharp edge in the data distribution.
+* **Inconsistent instruments (`birge_ratio`).** Two instruments measure the same quantity and disagree beyond their stated errors. The scatter has to be inflated (Birge ratio, or a scale-factor posterior), and nothing says the stated errors are wrong.
+* **Unit traps across files.** The unit convention lives in a second file: a column header in one CSV, a footnote in a calibration certificate. This extends the one failure frontier models actually showed.
+* **Heavy tails that are physical, not glitches (`physical_tails`).** Outlier rejection is wrong here: the tails carry information, as in a Landau-distributed energy loss. This inverts the `outliers` family so that reflexive sigma-clipping is penalised.
+
+Each candidate must meet the family standards (exact deterministic reference, `calibrate`, `probe`, an agnostic-analyst check). Each must also pass a **cheap frontier pilot first**: 25 seeds on two inexpensive models (e.g. Claude Haiku and GPT-6 Luna via OpenRouter, about $0.25), before building it out in full.
 
 ---
 
